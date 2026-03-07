@@ -47,6 +47,7 @@ https://www.geeksforgeeks.org/different-ways-to-create-pandas-dataframe/
 
 import copy
 import pandas as pd
+from datetime import datetime
 
 # CONSTANTS
 
@@ -374,7 +375,8 @@ def save_snake_pattern(num_row, num_col, snake_well_locations):
 
     df = pd.DataFrame(result)
     print(df.head(5))
-    destination = "location_file_snakefsg.csv"
+    time_stamp = datetime.now().strftime("%Y-%m-%d_%H%M")
+    destination = f"location_file_snake_{time_stamp}.csv"
     df.to_csv(destination) # This is where you can change the name of the CSV file that is generated KC 06-07-2024
     print(f"File saved as {destination}")
 
@@ -408,10 +410,10 @@ def main():
 
     # More like the Build Plate
     # These four locations should be the well centered of their respective corners
-    top_left = {"X": 71.5, "Y": 120, "Z": 0.0}
-    top_right = {"X": 162.6 , "Y": 119, "Z": 0.0}
-    bottom_left = {"X": 70.6, "Y": 55.3, "Z": 0.0}
-    bottom_right = {"X": 161.6, "Y": 54.2, "Z": 0.0}
+    top_left = {'X': 84.2, 'Y': 163.6, 'Z': 0.0}
+    top_right = {'X': 173.9, 'Y': 163.9, 'Z': 0.0}
+    bottom_left = {'X': 84.2, 'Y': 99.8, 'Z': 0.0}
+    bottom_right = {'X': 173.8, 'Y': 100.0, 'Z': 0.0}
     
     
     

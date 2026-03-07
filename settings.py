@@ -14,8 +14,7 @@ import yaml
 # Placeholder Constants
 # Monoprice Maker Select 3D Printer V2, Lab 3D Printer
 DEVICE_PATH = '/dev/ttyUSB0'
-# BAUDRATE = 250000
-BAUDRATE = 115200 #for Marlin Firmware
+BAUDRATE = 115200     # 115200: for Marlin Firmware
 TIMEOUT_TIME = 1      # Wait 1 second
 REBOOT_WAIT_TIME = 5  # 5 seconds
 
@@ -29,7 +28,7 @@ isVideoCaptureModeOn = False
 isPictureCaptureModeOn = True
 
 # Camera Rotation
-CAMERA_ROTATION_ANGLE = 270
+CAMERA_ROTATION_ANGLE = 180
 
 # File and Folder Names
 # TODO: Put in a settings file?
@@ -49,28 +48,35 @@ FOLDERPATH = "/home/pi/"
 HOME = "G28"
 ABSOLUTE_POS = "G90"
 RELATIVE_POS = "G91"
-"""
+
 # Which Project? Will influence which settings are loaded
 # PROJECT = "mht"
-PROJECT = "cell_sensor"
+PROJECT = "FlyCamV2"
 
 # Load YAML Settings
 with open("connection_settings.yaml") as file:
     # The fullloader parameter handles the conversion from YAML
     # scalar values to Python the dictionary format
     connection_settings_dict = yaml.load(file, Loader=yaml.FullLoader)
+    PRINTER_TYPES = {
+    "cell_sensor": "monoprice",
+    "mht": "monoprice",
+    "FlyCamV2": "Creality",
+    }
+    printer_key = PRINTER_TYPES.get(PROJECT, "monoprice")
+    profile = connection_settings_dict[PROJECT][printer_key]
     # How to access dict items
     # print(connection_settings_dict["cell_sensor"]["monoprice"]["device_path"])
-    DEVICE_PATH = connection_settings_dict[PROJECT]["monoprice"]["device_path"]
-    BAUDRATE = connection_settings_dict[PROJECT]["monoprice"]["baudrate"]
-    TIMEOUT_TIME = connection_settings_dict[PROJECT]["monoprice"]["timeout_time"]
-    REBOOT_WAIT_TIME = connection_settings_dict[PROJECT]["monoprice"]["reboot_wait_time"]
-    X_MAX = connection_settings_dict[PROJECT]["monoprice"]["max"]["x"]
-    Y_MAX = connection_settings_dict[PROJECT]["monoprice"]["max"]["y"]
-    Z_MAX = connection_settings_dict[PROJECT]["monoprice"]["max"]["z"]
-    MAX_SPEED = connection_settings_dict[PROJECT]["monoprice"]["max"]["speed"]
-    CAMERA_ROTATION_ANGLE = connection_settings_dict[PROJECT]["monoprice"]["camera_rotation"]
-    print("Loaded Settings for:", connection_settings_dict[PROJECT]["monoprice"]["name"])
+    DEVICE_PATH = profile["device_path"]
+    BAUDRATE = profile["baudrate"]
+    TIMEOUT_TIME = profile["timeout_time"]
+    REBOOT_WAIT_TIME = profile["reboot_wait_time"]
+    X_MAX = profile["max"]["x"]
+    Y_MAX = profile["max"]["y"]
+    Z_MAX = profile["max"]["z"]
+    MAX_SPEED = profile["max"]["speed"]
+    CAMERA_ROTATION_ANGLE = profile["camera_rotation"]
+    print("Loaded Settings for:", profile["name"])
     print("Project:", PROJECT)
     # print("CAMERA_ROTATION_ANGLE", CAMERA_ROTATION_ANGLE)
 
@@ -78,4 +84,3 @@ with open("connection_settings.yaml") as file:
 # TODO: Later feature
 # TODO: Research project structure for GUI and Settings file
 
-"""

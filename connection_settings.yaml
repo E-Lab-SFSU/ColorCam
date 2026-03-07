@@ -37,3 +37,21 @@ mht:
         z: 180
         # travel speed in mm/sec
         speed: 70
+        
+# For FlyCam V2, Ender 3 version of Flycam
+FlyCamV2:
+    Creality:
+      name: Ender 3
+      device_path: /dev/ttyUSB0
+      baudrate: 115200
+      # timeout and reboot times are in seconds
+      timeout_time: 1
+      reboot_wait_time: 8
+      camera_rotation: 180
+      # maximum dimensions in mm, and travel speed in mm/sec
+      max:
+        x: 220
+        y: 220
+        z: 220
+        # travel speed in mm/sec
+        speed: 70

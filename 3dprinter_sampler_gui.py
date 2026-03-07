@@ -41,14 +41,14 @@ Changelog
 
 """
 
-# Import PySimpleGUI, cv2, numpy, time libraries
+# Import FreeSimpleGUI, cv2, numpy, time libraries
 # Import picamera libraries
 
 from datetime import datetime
 from picamera.array import PiRGBArray, PiBayerArray
 from picamera import PiCamera
 import csv
-import PySimpleGUI as sg
+import FreeSimpleGUI as sg
 import cv2
 import numpy as np
 import os
