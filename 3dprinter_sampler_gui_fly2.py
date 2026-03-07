@@ -840,17 +840,34 @@ def get_video(camera):
 
 def capture_still(camera, file_full_path):
     """Safely capture a still by pausing preview and restoring resolution."""
+    backend_name = str(getattr(camera, "backend_name", ""))
+    is_usb_backend = ("USBCameraBackend" in backend_name)
+
     with CAMERA_LOCK:
         was_previewing = bool(camera.preview)
-        if was_previewing:
+        if was_previewing and not is_usb_backend:
             camera.stop_preview()
         original_res = camera.resolution
-        camera.resolution = (PIC_WIDTH, PIC_HEIGHT)
-        camera.capture(file_full_path)
-        camera.resolution = original_res
-        if was_previewing:
-            preview_window = (PREVIEW_LOC_X, PREVIEW_LOC_Y, PREVIEW_WIDTH, PREVIEW_HEIGHT)
-            camera.start_preview(alpha=PREVIEW_ALPHA, fullscreen=False, window=preview_window)
+        success = False
+        try:
+            if is_usb_backend:
+                # USB cameras often behave better when capture uses current stream settings.
+                camera.capture(file_full_path)
+            else:
+                camera.resolution = (PIC_WIDTH, PIC_HEIGHT)
+                camera.capture(file_full_path)
+            success = True
+        except Exception as exc:
+            print(f"Still capture failed: {exc}")
+        finally:
+            try:
+                camera.resolution = original_res
+            except Exception:
+                pass
+            if was_previewing and not is_usb_backend:
+                preview_window = (PREVIEW_LOC_X, PREVIEW_LOC_Y, PREVIEW_WIDTH, PREVIEW_HEIGHT)
+                camera.start_preview(alpha=PREVIEW_ALPHA, fullscreen=False, window=preview_window)
+        return success
 
 
 def get_picture(camera):
@@ -863,8 +880,8 @@ def get_picture(camera):
     
     pic_save_full_path = f"{PIC_SAVE_FOLDER}/{pic_save_name}"
     
-    capture_still(camera, pic_save_full_path)
-    print(f"Saved Image: {pic_save_full_path}")
+    if capture_still(camera, pic_save_full_path):
+        print(f"Saved Image: {pic_save_full_path}")
     pass
 
 
@@ -876,8 +893,8 @@ def get_well_picture(camera, file_full_path):
     # unique_id = get_unique_id()
     # pic_save_name = f"well{well_number}_{unique_id}_{pic_width}x{pic_height}.jpg"
     
-    capture_still(camera, file_full_path)
-    print(f"Saved Image: {file_full_path}")
+    if capture_still(camera, file_full_path):
+        print(f"Saved Image: {file_full_path}")
     pass
 
 
@@ -894,9 +911,9 @@ def get_x_pictures(x, delay_seconds, camera):
         # Create Full Save Path using Save Name and Save Folder
         pic_save_full_path = f"{PIC_SAVE_FOLDER}/{pic_save_name}"
         # Capture Image
-        capture_still(camera, pic_save_full_path)
-        # Print that picture was saved
-        print(f"Saved Image: {pic_save_full_path}")
+        if capture_still(camera, pic_save_full_path):
+            # Print that picture was saved
+            print(f"Saved Image: {pic_save_full_path}")
         # Wait Delay Amount
         time.sleep(delay_seconds)
     

@@ -56,10 +56,16 @@ def _can_use_usb_camera(device_index=0) -> bool:
     if cv2 is None:
         return False
     try:
-        cap = cv2.VideoCapture(device_index)
-        ok = cap.isOpened()
-        cap.release()
-        return ok
+        caps = []
+        if hasattr(cv2, "CAP_V4L2"):
+            caps.append(cv2.VideoCapture(device_index, cv2.CAP_V4L2))
+        caps.append(cv2.VideoCapture(device_index))
+        for cap in caps:
+            ok = cap.isOpened()
+            cap.release()
+            if ok:
+                return True
+        return False
     except Exception:
         return False
 
@@ -468,8 +474,8 @@ class USBCameraBackend(BaseCameraBackend):
             device_index = int(device_index)
 
         self._device_index = device_index
-        self.cap = cv2.VideoCapture(self._device_index)
-        if not self.cap.isOpened():
+        self.cap = self._open_capture()
+        if self.cap is None or not self.cap.isOpened():
             raise RuntimeError(f"Unable to open USB camera device: {self._device_index}")
 
         self._io_lock = Lock()
@@ -501,6 +507,36 @@ class USBCameraBackend(BaseCameraBackend):
 
         self.set_resolution(self._resolution)
 
+    def _open_capture(self):
+        candidates = []
+        if hasattr(cv2, "CAP_V4L2"):
+            candidates.append(lambda: cv2.VideoCapture(self._device_index, cv2.CAP_V4L2))
+        candidates.append(lambda: cv2.VideoCapture(self._device_index))
+
+        for open_fn in candidates:
+            cap = open_fn()
+            if cap is not None and cap.isOpened():
+                return cap
+            if cap is not None:
+                cap.release()
+        return None
+
+    def _reopen_capture(self):
+        with self._io_lock:
+            try:
+                self.cap.release()
+            except Exception:
+                pass
+            self.cap = self._open_capture()
+            if self.cap is None:
+                return False
+            try:
+                self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self._resolution[0])
+                self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self._resolution[1])
+            except Exception:
+                pass
+            return True
+
     def _apply_rotation(self, frame):
         rot = self._rotation % 360
         if rot == 0:
@@ -523,12 +559,22 @@ class USBCameraBackend(BaseCameraBackend):
         return cv2.resize(frame, (target_w, target_h))
 
     def _read_frame(self):
-        with self._io_lock:
-            ok, frame = self.cap.read()
-        if not ok or frame is None:
-            return None
-        frame = self._apply_rotation(frame)
-        return self._resize_if_needed(frame, self._resolution)
+        for _ in range(3):
+            with self._io_lock:
+                ok, frame = self.cap.read()
+            if ok and frame is not None:
+                frame = self._apply_rotation(frame)
+                return self._resize_if_needed(frame, self._resolution)
+            time.sleep(0.03)
+
+        if self._reopen_capture():
+            with self._io_lock:
+                ok, frame = self.cap.read()
+            if ok and frame is not None:
+                frame = self._apply_rotation(frame)
+                return self._resize_if_needed(frame, self._resolution)
+
+        return None
 
     def _preview_loop(self):
         window_enabled = True
@@ -617,8 +663,11 @@ class USBCameraBackend(BaseCameraBackend):
         width, height = int(res[0]), int(res[1])
         self._resolution = (width, height)
         with self._io_lock:
-            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
-            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+            try:
+                self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+                self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+            except Exception:
+                pass
 
     def set_rotation(self, rotation: int):
         self._rotation = int(rotation) % 360
@@ -628,7 +677,10 @@ class USBCameraBackend(BaseCameraBackend):
         frame = None
         if self._previewing and self._last_frame is not None:
             frame = self._last_frame.copy()
-        else:
+        if frame is None:
+            frame = self._read_frame()
+        if frame is None:
+            time.sleep(0.05)
             frame = self._read_frame()
         if frame is None:
             raise RuntimeError("USB camera could not read a frame for still capture.")
