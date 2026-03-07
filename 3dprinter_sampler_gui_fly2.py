@@ -821,7 +821,8 @@ def capture_still(camera, file_full_path):
         camera.capture(file_full_path)
         camera.resolution = original_res
         if was_previewing:
-            camera.start_preview()
+            preview_window = (PREVIEW_LOC_X, PREVIEW_LOC_Y, PREVIEW_WIDTH, PREVIEW_HEIGHT)
+            camera.start_preview(alpha=PREVIEW_ALPHA, fullscreen=False, window=preview_window)
 
 
 def get_picture(camera):
