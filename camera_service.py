@@ -48,6 +48,52 @@ def _as_float(value, default=0.0):
         return default
 
 
+def _normalize_backend_name(value: str) -> str:
+    return str(value or "picamera").strip().lower().replace(" ", "").replace("_", "").replace("-", "")
+
+
+def _can_use_usb_camera(device_index=0) -> bool:
+    if cv2 is None:
+        return False
+    try:
+        cap = cv2.VideoCapture(device_index)
+        ok = cap.isOpened()
+        cap.release()
+        return ok
+    except Exception:
+        return False
+
+
+def _can_use_libcamera() -> bool:
+    if Picamera2 is None:
+        return False
+    try:
+        info = Picamera2.global_camera_info()
+        return bool(info)
+    except Exception:
+        return False
+
+
+def autodetect_camera_backend(device_index=0) -> str:
+    """
+    Pick the first usable backend for this system.
+    Preference order for auto mode:
+    1) USB camera at configured device index
+    2) libcamera/picamera2
+    3) legacy picamera
+    """
+    if _can_use_usb_camera(device_index=device_index):
+        return "usb"
+    if _can_use_libcamera():
+        return "libcamera"
+    if PiCamera is not None:
+        return "picamera"
+    raise RuntimeError(
+        "No supported camera backend detected. "
+        "Checked USB (OpenCV), libcamera (picamera2), and picamera."
+    )
+
+
 class BaseCameraBackend:
     def start_preview(self, window: Tuple[int, int, int, int], alpha: int = 255):
         raise NotImplementedError
@@ -744,6 +790,10 @@ class CameraService:
         with self.lock:
             return self.backend.preferred_video_extension()
 
+    def backend_name(self) -> str:
+        with self.lock:
+            return self.backend.__class__.__name__
+
     def close(self):
         with self.lock:
             self.backend.close()
@@ -896,6 +946,10 @@ class LegacyCameraAdapter:
     def preferred_video_extension(self):
         return self._service.preferred_video_extension()
 
+    @property
+    def backend_name(self):
+        return self._service.backend_name()
+
     def close(self):
         self._service.close()
 
@@ -906,15 +960,20 @@ def create_camera_service(
     preview_res=(960, 720),
     device_index=0,
 ) -> CameraService:
-    name = (backend_name or "picamera").strip().lower()
-    if name in ("picamera", "legacy"):
+    name = _normalize_backend_name(backend_name)
+    if name in ("auto", "detect", "autodetect"):
+        name = autodetect_camera_backend(device_index=device_index)
+    if name in ("picamera", "legacy", "picam"):
         backend = PicameraBackend(rotation=rotation, preview_res=preview_res)
-    elif name in ("libcamera", "picamera2"):
+    elif name in ("libcamera", "picamera2", "libcam"):
         backend = LibcameraBackend(rotation=rotation, preview_res=preview_res)
-    elif name in ("usb", "webcam", "v4l2"):
+    elif name in ("usb", "usbcamera", "webcam", "v4l2", "opencv"):
         backend = USBCameraBackend(rotation=rotation, preview_res=preview_res, device_index=device_index)
     else:
-        raise ValueError(f"Unknown camera backend: {backend_name}")
+        raise ValueError(
+            f"Unknown camera backend: {backend_name}. "
+            "Use one of: picamera, libcamera, usb."
+        )
     return CameraService(backend=backend)
 
 

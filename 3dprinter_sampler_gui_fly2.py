@@ -1510,6 +1510,8 @@ def main():
     # Setup camera backend (picamera or libcamera/picamera2 via settings).
     backend_name = getattr(C, "CAMERA_BACKEND", "picamera")
     camera_device_index = getattr(C, "CAMERA_DEVICE_INDEX", 0)
+    backend_name_norm = str(backend_name).strip().lower().replace(" ", "").replace("_", "").replace("-", "")
+    print(f"Camera backend requested: {backend_name} (device: {camera_device_index})")
     try:
         camera = create_legacy_camera(
             backend_name=backend_name,
@@ -1517,8 +1519,11 @@ def main():
             preview_res=(VID_WIDTH, VID_HEIGHT),
             device_index=camera_device_index,
         )
-    except (RuntimeError, ValueError) as exc:
-        if backend_name != "picamera":
+    except ValueError:
+        # Invalid backend names should fail fast so config issues are obvious.
+        raise
+    except RuntimeError as exc:
+        if backend_name_norm in ("libcamera", "picamera2", "libcam"):
             print(f"Unable to load camera backend '{backend_name}': {exc}")
             print("Falling back to 'picamera'.")
             camera = create_legacy_camera(
@@ -1528,7 +1533,9 @@ def main():
                 device_index=camera_device_index,
             )
         else:
+            # Do not silently fall back for USB errors (e.g. wrong device index).
             raise
+    print(f"Camera backend active: {getattr(camera, 'backend_name', 'unknown')}")
     camera.framerate = 32
     supports_crosshair_overlay = bool(getattr(camera, "supports_overlay", True))
     if not supports_crosshair_overlay:
