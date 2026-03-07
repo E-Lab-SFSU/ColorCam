@@ -29,6 +29,8 @@ isPictureCaptureModeOn = True
 
 # Camera Rotation
 CAMERA_ROTATION_ANGLE = 180
+CAMERA_BACKEND = "picamera"
+CAMERA_DEVICE_INDEX = 0
 
 # File and Folder Names
 # TODO: Put in a settings file?
@@ -75,7 +77,13 @@ with open("connection_settings.yaml") as file:
     Y_MAX = profile["max"]["y"]
     Z_MAX = profile["max"]["z"]
     MAX_SPEED = profile["max"]["speed"]
-    CAMERA_ROTATION_ANGLE = profile["camera_rotation"]
+    CAMERA_ROTATION_ANGLE = profile.get("camera_rotation", CAMERA_ROTATION_ANGLE)
+    CAMERA_BACKEND = str(profile.get("camera_backend", "picamera")).lower()
+    camera_device_value = profile.get("camera_device_index", CAMERA_DEVICE_INDEX)
+    if isinstance(camera_device_value, str) and camera_device_value.isdigit():
+        CAMERA_DEVICE_INDEX = int(camera_device_value)
+    else:
+        CAMERA_DEVICE_INDEX = camera_device_value
     print("Loaded Settings for:", profile["name"])
     print("Project:", PROJECT)
     # print("CAMERA_ROTATION_ANGLE", CAMERA_ROTATION_ANGLE)
@@ -83,4 +91,3 @@ with open("connection_settings.yaml") as file:
 # User Defined function that can change Constants by having user load up a YAML file and choosing a different 3D printer
 # TODO: Later feature
 # TODO: Research project structure for GUI and Settings file
-
