@@ -493,9 +493,11 @@ class USBCameraBackend(BaseCameraBackend):
         self._record_thread = None
         self._record_writer = None
         self._record_interval = 0.05
+        self._consecutive_read_failures = 0
+        self._max_read_failures_before_reopen = 12
 
         self._controls = {
-            "framerate": 20,
+            "framerate": 30,
             "iso": 100,
             "contrast": 0,
             "awb_mode": "auto",
@@ -505,6 +507,7 @@ class USBCameraBackend(BaseCameraBackend):
             "led": False,
         }
 
+        self._configure_capture_properties()
         self.set_resolution(self._resolution)
 
     def _open_capture(self):
@@ -530,12 +533,34 @@ class USBCameraBackend(BaseCameraBackend):
             self.cap = self._open_capture()
             if self.cap is None:
                 return False
+            self._configure_capture_properties(already_locked=True)
             try:
                 self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self._resolution[0])
                 self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self._resolution[1])
             except Exception:
                 pass
             return True
+
+    def _configure_capture_properties(self, already_locked=False):
+        if already_locked:
+            try:
+                self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            except Exception:
+                pass
+            try:
+                mjpg = cv2.VideoWriter_fourcc(*"MJPG")
+                self.cap.set(cv2.CAP_PROP_FOURCC, mjpg)
+            except Exception:
+                pass
+            try:
+                fps = max(1.0, _as_float(self._controls.get("framerate", 30), 30.0))
+                self.cap.set(cv2.CAP_PROP_FPS, fps)
+            except Exception:
+                pass
+            return
+
+        with self._io_lock:
+            self._configure_capture_properties(already_locked=True)
 
     def _apply_rotation(self, frame):
         rot = self._rotation % 360
@@ -559,20 +584,17 @@ class USBCameraBackend(BaseCameraBackend):
         return cv2.resize(frame, (target_w, target_h))
 
     def _read_frame(self):
-        for _ in range(3):
-            with self._io_lock:
-                ok, frame = self.cap.read()
-            if ok and frame is not None:
-                frame = self._apply_rotation(frame)
-                return self._resize_if_needed(frame, self._resolution)
-            time.sleep(0.03)
+        with self._io_lock:
+            ok, frame = self.cap.read()
+        if ok and frame is not None:
+            self._consecutive_read_failures = 0
+            frame = self._apply_rotation(frame)
+            return self._resize_if_needed(frame, self._resolution)
 
-        if self._reopen_capture():
-            with self._io_lock:
-                ok, frame = self.cap.read()
-            if ok and frame is not None:
-                frame = self._apply_rotation(frame)
-                return self._resize_if_needed(frame, self._resolution)
+        self._consecutive_read_failures += 1
+        if self._consecutive_read_failures >= self._max_read_failures_before_reopen:
+            if self._reopen_capture():
+                self._consecutive_read_failures = 0
 
         return None
 
@@ -602,7 +624,7 @@ class USBCameraBackend(BaseCameraBackend):
                 except Exception:
                     window_enabled = False
 
-            time.sleep(0.01)
+            time.sleep(0.001)
 
         try:
             cv2.destroyWindow(self.PREVIEW_WINDOW_NAME)
