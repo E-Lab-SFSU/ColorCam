@@ -56,16 +56,15 @@ def _can_use_usb_camera(device_index=0) -> bool:
     if cv2 is None:
         return False
     try:
-        caps = []
         if hasattr(cv2, "CAP_V4L2"):
-            caps.append(cv2.VideoCapture(device_index, cv2.CAP_V4L2))
-        caps.append(cv2.VideoCapture(device_index))
-        for cap in caps:
+            cap = cv2.VideoCapture(device_index, cv2.CAP_V4L2)
             ok = cap.isOpened()
             cap.release()
-            if ok:
-                return True
-        return False
+            return ok
+        cap = cv2.VideoCapture(device_index)
+        ok = cap.isOpened()
+        cap.release()
+        return ok
     except Exception:
         return False
 
@@ -511,17 +510,18 @@ class USBCameraBackend(BaseCameraBackend):
         self.set_resolution(self._resolution)
 
     def _open_capture(self):
-        candidates = []
         if hasattr(cv2, "CAP_V4L2"):
-            candidates.append(lambda: cv2.VideoCapture(self._device_index, cv2.CAP_V4L2))
-        candidates.append(lambda: cv2.VideoCapture(self._device_index))
-
-        for open_fn in candidates:
-            cap = open_fn()
+            cap = cv2.VideoCapture(self._device_index, cv2.CAP_V4L2)
             if cap is not None and cap.isOpened():
                 return cap
             if cap is not None:
                 cap.release()
+
+        cap = cv2.VideoCapture(self._device_index)
+        if cap is not None and cap.isOpened():
+            return cap
+        if cap is not None:
+            cap.release()
         return None
 
     def _reopen_capture(self):
@@ -600,6 +600,7 @@ class USBCameraBackend(BaseCameraBackend):
 
     def _preview_loop(self):
         window_enabled = True
+        previous_window_rect = None
         try:
             cv2.namedWindow(self.PREVIEW_WINDOW_NAME, cv2.WINDOW_NORMAL)
         except Exception:
@@ -617,8 +618,11 @@ class USBCameraBackend(BaseCameraBackend):
 
             if window_enabled:
                 try:
-                    cv2.resizeWindow(self.PREVIEW_WINDOW_NAME, w, h)
-                    cv2.moveWindow(self.PREVIEW_WINDOW_NAME, x, y)
+                    current_window_rect = (x, y, w, h)
+                    if current_window_rect != previous_window_rect:
+                        cv2.resizeWindow(self.PREVIEW_WINDOW_NAME, w, h)
+                        cv2.moveWindow(self.PREVIEW_WINDOW_NAME, x, y)
+                        previous_window_rect = current_window_rect
                     cv2.imshow(self.PREVIEW_WINDOW_NAME, preview_frame)
                     cv2.waitKey(1)
                 except Exception:
