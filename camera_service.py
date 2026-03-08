@@ -38,6 +38,11 @@ try:
 except ImportError:
     cv2 = None
 
+try:
+    import numpy as np
+except ImportError:
+    np = None
+
 
 def _as_float(value, default=0.0):
     if value is None:
@@ -468,6 +473,8 @@ class USBCameraBackend(BaseCameraBackend):
     def __init__(self, rotation: int = 0, preview_res: Tuple[int, int] = (960, 720), device_index=0):
         if cv2 is None:
             raise RuntimeError("OpenCV (cv2) is not available for USB camera backend.")
+        if np is None:
+            raise RuntimeError("numpy is not available for USB camera backend.")
 
         if isinstance(device_index, str) and device_index.isdigit():
             device_index = int(device_index)
@@ -505,6 +512,10 @@ class USBCameraBackend(BaseCameraBackend):
             "shutter_speed": 0,
             "led": False,
         }
+
+        self._overlay_lock = Lock()
+        self._overlay_counter = 0
+        self._overlay_data = None
 
         self._configure_capture_properties()
         self.set_resolution(self._resolution)
@@ -615,6 +626,11 @@ class USBCameraBackend(BaseCameraBackend):
             self._last_frame = frame
             x, y, w, h = self._preview_window
             preview_frame = self._resize_if_needed(frame, (w, h))
+            overlay_data = None
+            with self._overlay_lock:
+                overlay_data = self._overlay_data
+            if overlay_data is not None:
+                preview_frame = self._apply_overlay(preview_frame, overlay_data)
 
             if window_enabled:
                 try:
@@ -715,15 +731,87 @@ class USBCameraBackend(BaseCameraBackend):
         if not ok:
             raise RuntimeError(f"Failed to write captured image to: {path}")
 
+    def _apply_overlay(self, frame, overlay_data):
+        bgr = overlay_data.get("bgr")
+        alpha = overlay_data.get("alpha")
+        if bgr is None or alpha is None:
+            return frame
+
+        points = overlay_data.get("points")
+        colors = overlay_data.get("colors")
+        alphas = overlay_data.get("alphas")
+        shape_hw = overlay_data.get("shape_hw")
+        if (
+            points is not None
+            and colors is not None
+            and alphas is not None
+            and shape_hw is not None
+            and tuple(shape_hw) == tuple(frame.shape[:2])
+        ):
+            src = frame[points].astype("float32")
+            blended = (1.0 - alphas) * src + alphas * colors
+            frame[points] = blended.astype("uint8")
+            return frame
+
+        h, w = frame.shape[:2]
+        oh, ow = bgr.shape[:2]
+        if (oh, ow) != (h, w):
+            bgr = cv2.resize(bgr, (w, h), interpolation=cv2.INTER_LINEAR)
+            alpha = cv2.resize(alpha, (w, h), interpolation=cv2.INTER_LINEAR)
+        if alpha.ndim == 2:
+            alpha_3 = alpha[..., None]
+        else:
+            alpha_3 = alpha
+        blended = frame.astype("float32")
+        blended = (1.0 - alpha_3) * blended + alpha_3 * bgr.astype("float32")
+        return blended.astype("uint8")
+
     def add_overlay(self, buffer, size, window, alpha: int = 255):
-        del buffer, size, window, alpha
-        return None
+        del alpha
+        if buffer is None or size is None:
+            return None
+        width, height = int(size[0]), int(size[1])
+        try:
+            rgba = np.frombuffer(buffer, dtype=np.uint8).reshape((height, width, 4))
+        except Exception:
+            return None
+
+        win_w = int(window[2]) if window and len(window) >= 4 else width
+        win_h = int(window[3]) if window and len(window) >= 4 else height
+        win_w = max(1, min(win_w, width))
+        win_h = max(1, min(win_h, height))
+
+        cropped = rgba[:win_h, :win_w, :]
+        bgr = cropped[..., :3][..., ::-1].copy()
+        alpha_mask = (cropped[..., 3].astype("float32") / 255.0).copy()
+        point_mask = alpha_mask > 0.0
+        points = np.where(point_mask)
+        colors = bgr[points].astype("float32") if points[0].size else None
+        alphas = alpha_mask[points].reshape((-1, 1)).astype("float32") if points[0].size else None
+
+        with self._overlay_lock:
+            self._overlay_counter += 1
+            overlay_id = self._overlay_counter
+            self._overlay_data = {
+                "id": overlay_id,
+                "bgr": bgr,
+                "alpha": alpha_mask,
+                "shape_hw": (win_h, win_w),
+                "points": points if points[0].size else None,
+                "colors": colors,
+                "alphas": alphas,
+            }
+        return overlay_id
 
     def remove_overlay(self, overlay=None):
-        del overlay
+        with self._overlay_lock:
+            if self._overlay_data is None:
+                return
+            if overlay is None or overlay == self._overlay_data.get("id"):
+                self._overlay_data = None
 
     def supports_overlay(self) -> bool:
-        return False
+        return True
 
     def set_control(self, name: str, value):
         if name == "resolution":
