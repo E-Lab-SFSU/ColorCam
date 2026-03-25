@@ -97,7 +97,8 @@ EXP_RADIO_PROMPT = "Experiment mode"
 
 # ---- CAMERA TAB ----
 # CONSTANTS
-PIC_SAVE_FOLDER = r"/home/pi/Projects/3dprinter_sampling"
+DEFAULT_SAMPLE_DIR = os.path.join(os.path.expanduser("~"), "Projects", "3dprinter_sampling")
+PIC_SAVE_FOLDER = DEFAULT_SAMPLE_DIR
 
 # Video Streaming:
 # Old = 640x480
@@ -169,7 +170,7 @@ START_Z_STACK_CREATION_TEXT = "Start Z Stack Creation"
 SAVE_LOC_BUTTON = "Save Loc Button"
 
 # Create Temp file to store locations into
-TEMP_FOLDER = r"/home/pi/Projects/3dprinter_sampling/temp"
+TEMP_FOLDER = os.path.join(DEFAULT_SAMPLE_DIR, "temp")
 TEMP_FILE = r"temp_loc.csv"
 TEMP_FULL_PATH = os.path.join(TEMP_FOLDER, TEMP_FILE)
 
@@ -1600,7 +1601,7 @@ def main():
     # Create Temp file to store locations into
 
     if not os.path.isdir(TEMP_FOLDER):
-        os.mkdir(TEMP_FOLDER)
+        os.makedirs(TEMP_FOLDER, exist_ok=True)
         print(f"Folder does not exist, making directory: {TEMP_FOLDER}")
 
     # Make newline be blank, prevents extra empty lines from happening
@@ -1648,8 +1649,8 @@ def main():
          sg.Radio(EXP_RADIO_VID_TEXT, EXP_RADIO_GROUP, default=False, key=EXP_RADIO_VID_KEY),
          sg.Radio(EXP_RADIO_PREVIEW_TEXT, EXP_RADIO_GROUP, default=False, key=EXP_RADIO_PREVIEW_KEY)],
         [sg.Text("Save Images to Folder:"),
-         sg.In(default_text="/media/pi/Seagate Portable Drive", size=(25, 1), enable_events=True, key=PIC_SAVE_FOLDER_KEY),
-         sg.FolderBrowse(initial_folder="/media/pi/Seagate Portable Drive")],
+         sg.In(default_text=PIC_SAVE_FOLDER, size=(25, 1), enable_events=True, key=PIC_SAVE_FOLDER_KEY),
+         sg.FolderBrowse(initial_folder=PIC_SAVE_FOLDER)],
         [sg.Button(START_EXPERIMENT, disabled=True), sg.Button(PAUSE_EXPERIMENT, disabled=True),
          sg.Button(RESUME_EXPERIMENT, disabled=True), sg.Button(STOP_EXPERIMENT, disabled=True)]
     ]

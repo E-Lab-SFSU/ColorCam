@@ -5,6 +5,7 @@ Purpose: Replaces Common Python file, allows for future GUI usage where the YAML
 """
 
 # Import libraries, yaml
+import os
 import yaml
 # Create Constants Variables, like in Common file
 
@@ -39,8 +40,8 @@ FILENAME_PREFIX = "well"
 FILENAME_VIDEO_EXTENSION = ".h264"
 FILENAME_PICTURE_EXTENSION = ".jpg"
 
-# RPi Path
-FOLDERPATH = "/home/pi/"
+# Default save path rooted at the current user's home directory.
+FOLDERPATH = os.path.join(os.path.expanduser("~"), "")
 
 # Windows Path (Save in current directory
 # FOLDERPATH = ""
