@@ -22,7 +22,10 @@ import random
 import time
 
 from datetime import datetime
-from picamera import PiCamera
+try:
+    from picamera import PiCamera
+except ImportError:
+    PiCamera = None
 
 # Preview Resolution
 VID_WIDTH = 640
@@ -44,6 +47,19 @@ SAVE_CSV_FOLDER = r'/home/pi/Projects/3dprinter_sampling/Test Pictures/7-21-2022
 SAVE_CSV_FILE = ''
 
 SAVE_IMAGE_FOLDER = r'/home/pi/Projects/3dprinter_sampling/Test Pictures/7-21-2022'
+
+
+def wait_for_digital_gain_settle(camera, label="digital_gain", max_wait_seconds=6.0, poll_seconds=0.5, epsilon=0.02):
+    prev_value = None
+    start_time = time.monotonic()
+
+    while time.monotonic() - start_time < max_wait_seconds:
+        current_value = float(camera.digital_gain)
+        print(f"{label}: {current_value}")
+        if prev_value is not None and abs(current_value - prev_value) <= epsilon:
+            break
+        prev_value = current_value
+        time.sleep(poll_seconds)
 
 
 def get_unique_id():
@@ -126,6 +142,9 @@ def append_to_csv_file(data_row):
 
 
 def setup_camera():
+    if PiCamera is None:
+        raise RuntimeError("picamera is not available on this system.")
+
     camera = PiCamera()
     # camera.resolution = PIC_RES
     camera.resolution = (VID_WIDTH, VID_HEIGHT)
@@ -137,22 +156,7 @@ def setup_camera():
     # Set AWB Mode
     # camera.awb_mode = 'tungsten'
     
-    #time.sleep(2)
-    pre_value = camera.digital_gain
-    cur_value = -1
-    # for i in range(20):
-    # Wait for digital gain values to settle, then break out of loop
-    while pre_value != cur_value:
-        pre_value = cur_value
-        # pre gets cur 
-        # cur get new
-        
-        cur_value = camera.digital_gain
-        #if pre_value != cur_value:
-        #    pre_value = cur_value
-        
-        print(f"cur_value: {cur_value}")
-        time.sleep(0.5)
+    wait_for_digital_gain_settle(camera, label="cur_value")
     
     
     return camera
@@ -175,23 +179,8 @@ def set_exposure_mode(camera):
     # Set ISO to desired value
     camera.iso = 0
     
-    # Wait for Automatic Gain Control to settle
-    # time.sleep(2)
-    pre_value = camera.digital_gain
-    cur_value = -1
-    # for i in range(20):
-    # Wait for digital gain values to settle, then break out of loop
-    while pre_value != cur_value:
-        pre_value = cur_value
-        # pre gets cur 
-        # cur get new
-        
-        cur_value = camera.digital_gain
-        #if pre_value != cur_value:
-        #    pre_value = cur_value
-        
-        print(f"digital_gain: {cur_value}")
-        time.sleep(0.5)
+    # Wait for Automatic Gain Control to settle.
+    wait_for_digital_gain_settle(camera, label="digital_gain")
     
     # Now fix the values
     

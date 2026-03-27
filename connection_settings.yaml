@@ -12,6 +12,8 @@ cell_sensor:
       # timeout and reboot times are in seconds
       timeout_time: 1
       reboot_wait_time: 5
+      camera_backend: picamera
+      camera_device_index: 0
       # maximum dimensions in mm, and speed in mm/sec
       max:
         x: 200
@@ -30,6 +32,8 @@ mht:
       # timeout and reboot times are in seconds
       timeout_time: 1
       reboot_wait_time: 8
+      camera_backend: picamera
+      camera_device_index: 0
       # maximum dimensions in mm, and travel speed in mm/sec
       max:
         x: 200
@@ -48,6 +52,8 @@ FlyCamV2:
       timeout_time: 1
       reboot_wait_time: 8
       camera_rotation: 180
+      camera_backend: picamera
+      camera_device_index: 0
       # maximum dimensions in mm, and travel speed in mm/sec
       max:
         x: 220

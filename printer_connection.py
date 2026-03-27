@@ -6,7 +6,6 @@ Module that sets up 3D Printer with Serial connection and sends GCode
 # camera, serial, time, yaml
 import os
 import pandas as pd
-import picamera
 import serial
 import time
 import yaml
@@ -362,4 +361,3 @@ def get_serial_data2():
             
             break
     return output
-

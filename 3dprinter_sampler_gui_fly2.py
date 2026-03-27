@@ -46,11 +46,9 @@ Changelog
 """
 
 # Import FreeSimpleGUI, cv2, numpy, time libraries
-# Import picamera libraries
+# Import camera backend adapter
 
 from datetime import datetime
-from picamera.array import PiRGBArray, PiBayerArray
-from picamera import PiCamera
 from Xlib.display import Display
 import csv
 import FreeSimpleGUI as sg
@@ -71,6 +69,7 @@ import module_experiment_timer as ET
 import module_well_location_helper as WL
 import module_well_location_calculator as WLC
 from module_snake_path import generate_snake_csv
+from camera_service import create_legacy_camera
 
 
 easy_rot = 180 #global variable for camera rotation, moved for access
@@ -98,7 +97,8 @@ EXP_RADIO_PROMPT = "Experiment mode"
 
 # ---- CAMERA TAB ----
 # CONSTANTS
-PIC_SAVE_FOLDER = r"/home/pi/Projects/3dprinter_sampling"
+DEFAULT_SAMPLE_DIR = os.path.join(os.path.expanduser("~"), "Projects", "3dprinter_sampling")
+PIC_SAVE_FOLDER = DEFAULT_SAMPLE_DIR
 
 # Video Streaming:
 # Old = 640x480
@@ -170,7 +170,7 @@ START_Z_STACK_CREATION_TEXT = "Start Z Stack Creation"
 SAVE_LOC_BUTTON = "Save Loc Button"
 
 # Create Temp file to store locations into
-TEMP_FOLDER = r"/home/pi/Projects/3dprinter_sampling/temp"
+TEMP_FOLDER = os.path.join(DEFAULT_SAMPLE_DIR, "temp")
 TEMP_FILE = r"temp_loc.csv"
 TEMP_FULL_PATH = os.path.join(TEMP_FOLDER, TEMP_FILE)
 
@@ -237,6 +237,26 @@ def sleep_with_stop(total_seconds, stop_event, chunk=0.25):
         wait = min(chunk, total_seconds - elapsed)
         time.sleep(wait)
         elapsed += wait
+
+
+def settle_camera_gain(camera, max_wait_seconds=6.0, poll_seconds=0.5, epsilon=0.02):
+    """
+    Wait briefly for gain values to stabilize without risking an infinite loop.
+    """
+    prev_value = None
+    start_time = time.monotonic()
+
+    while time.monotonic() - start_time < max_wait_seconds:
+        try:
+            current_value = float(camera.digital_gain)
+        except Exception:
+            break
+
+        print(f"digital_gain: {current_value}")
+        if prev_value is not None and abs(current_value - prev_value) <= epsilon:
+            break
+        prev_value = current_value
+        time.sleep(poll_seconds)
 
 # ==== USER DEFINED FUNCTIONS =====
 
@@ -798,30 +818,57 @@ def get_video(camera):
     # Create Unique Filename
     current_time = datetime.now()
     current_time_str = current_time.strftime("%Y-%m-%d_%H%M%S")
-    filename = f"video_{current_time_str}.h264"
+    video_ext = getattr(camera, "preferred_video_extension", ".h264")
+    if not isinstance(video_ext, str) or len(video_ext) == 0:
+        video_ext = ".h264"
+    if not video_ext.startswith("."):
+        video_ext = f".{video_ext}"
+    filename = f"video_{current_time_str}{video_ext}"
     
     # Set Recording Time (in seconds)
     recording_time = int(1 * 5)
     
-    camera.start_recording(filename)
-    camera.wait_recording(recording_time)
-    camera.stop_recording()
+    try:
+        camera.start_recording(filename)
+        camera.wait_recording(recording_time)
+        camera.stop_recording()
+    except Exception as exc:
+        print(f"Video recording failed: {exc}")
+        return
     
     print(f"Recorded Video: {filename}")
 
 
 def capture_still(camera, file_full_path):
     """Safely capture a still by pausing preview and restoring resolution."""
+    backend_name = str(getattr(camera, "backend_name", ""))
+    is_usb_backend = ("USBCameraBackend" in backend_name)
+
     with CAMERA_LOCK:
         was_previewing = bool(camera.preview)
-        if was_previewing:
+        if was_previewing and not is_usb_backend:
             camera.stop_preview()
         original_res = camera.resolution
-        camera.resolution = (PIC_WIDTH, PIC_HEIGHT)
-        camera.capture(file_full_path)
-        camera.resolution = original_res
-        if was_previewing:
-            camera.start_preview()
+        success = False
+        try:
+            if is_usb_backend:
+                # USB cameras often behave better when capture uses current stream settings.
+                camera.capture(file_full_path)
+            else:
+                camera.resolution = (PIC_WIDTH, PIC_HEIGHT)
+                camera.capture(file_full_path)
+            success = True
+        except Exception as exc:
+            print(f"Still capture failed: {exc}")
+        finally:
+            try:
+                camera.resolution = original_res
+            except Exception:
+                pass
+            if was_previewing and not is_usb_backend:
+                preview_window = (PREVIEW_LOC_X, PREVIEW_LOC_Y, PREVIEW_WIDTH, PREVIEW_HEIGHT)
+                camera.start_preview(alpha=PREVIEW_ALPHA, fullscreen=False, window=preview_window)
+        return success
 
 
 def get_picture(camera):
@@ -834,8 +881,8 @@ def get_picture(camera):
     
     pic_save_full_path = f"{PIC_SAVE_FOLDER}/{pic_save_name}"
     
-    capture_still(camera, pic_save_full_path)
-    print(f"Saved Image: {pic_save_full_path}")
+    if capture_still(camera, pic_save_full_path):
+        print(f"Saved Image: {pic_save_full_path}")
     pass
 
 
@@ -847,8 +894,8 @@ def get_well_picture(camera, file_full_path):
     # unique_id = get_unique_id()
     # pic_save_name = f"well{well_number}_{unique_id}_{pic_width}x{pic_height}.jpg"
     
-    capture_still(camera, file_full_path)
-    print(f"Saved Image: {file_full_path}")
+    if capture_still(camera, file_full_path):
+        print(f"Saved Image: {file_full_path}")
     pass
 
 
@@ -865,9 +912,9 @@ def get_x_pictures(x, delay_seconds, camera):
         # Create Full Save Path using Save Name and Save Folder
         pic_save_full_path = f"{PIC_SAVE_FOLDER}/{pic_save_name}"
         # Capture Image
-        capture_still(camera, pic_save_full_path)
-        # Print that picture was saved
-        print(f"Saved Image: {pic_save_full_path}")
+        if capture_still(camera, pic_save_full_path):
+            # Print that picture was saved
+            print(f"Saved Image: {pic_save_full_path}")
         # Wait Delay Amount
         time.sleep(delay_seconds)
     
@@ -1478,11 +1525,39 @@ def main():
     # Temporary Solution: Make pic res/save globally accessible for modification
     global PIC_WIDTH, PIC_HEIGHT, PIC_SAVE_FOLDER, is_running_experiment, easy_rot
 
-    # Setup Camera
-    # initialize the camera and grab a reference to the raw camera capture
-    camera = PiCamera()
-    camera.resolution = (VID_WIDTH, VID_HEIGHT)
+    # Setup camera backend (picamera or libcamera/picamera2 via settings).
+    backend_name = getattr(C, "CAMERA_BACKEND", "picamera")
+    camera_device_index = getattr(C, "CAMERA_DEVICE_INDEX", 0)
+    backend_name_norm = str(backend_name).strip().lower().replace(" ", "").replace("_", "").replace("-", "")
+    print(f"Camera backend requested: {backend_name} (device: {camera_device_index})")
+    try:
+        camera = create_legacy_camera(
+            backend_name=backend_name,
+            rotation=easy_rot,
+            preview_res=(VID_WIDTH, VID_HEIGHT),
+            device_index=camera_device_index,
+        )
+    except ValueError:
+        # Invalid backend names should fail fast so config issues are obvious.
+        raise
+    except RuntimeError as exc:
+        if backend_name_norm in ("libcamera", "picamera2", "libcam"):
+            print(f"Unable to load camera backend '{backend_name}': {exc}")
+            print("Falling back to 'picamera'.")
+            camera = create_legacy_camera(
+                backend_name="picamera",
+                rotation=easy_rot,
+                preview_res=(VID_WIDTH, VID_HEIGHT),
+                device_index=camera_device_index,
+            )
+        else:
+            # Do not silently fall back for USB errors (e.g. wrong device index).
+            raise
+    print(f"Camera backend active: {getattr(camera, 'backend_name', 'unknown')}")
     camera.framerate = 32
+    supports_crosshair_overlay = bool(getattr(camera, "supports_overlay", True))
+    if not supports_crosshair_overlay:
+        print("Crosshair overlay is not supported by this camera backend.")
     # MHT: 270
     # camera.rotation = 270
 
@@ -1501,22 +1576,8 @@ def main():
     # Set AWB Mode
     # camera.awb_mode = 'tungsten'
     
-    # Let Camera Settings Settle:
-    pre_value = camera.digital_gain
-    cur_value = -1
-    # for i in range(20):
-    # Wait for digital gain values to settle, then break out of loop
-    while pre_value != cur_value:
-        pre_value = cur_value
-        # pre gets cur 
-        # cur get new
-        
-        cur_value = camera.digital_gain
-        #if pre_value != cur_value:
-        #    pre_value = cur_value
-        
-        print(f"digital_gain: {cur_value}")
-        time.sleep(0.5)
+    # Let camera settings settle (bounded wait for backend portability).
+    settle_camera_gain(camera)
     
     
     # rawCapture = PiRGBArray(camera, size=(VID_WIDTH, VID_HEIGHT))
@@ -1540,7 +1601,7 @@ def main():
     # Create Temp file to store locations into
 
     if not os.path.isdir(TEMP_FOLDER):
-        os.mkdir(TEMP_FOLDER)
+        os.makedirs(TEMP_FOLDER, exist_ok=True)
         print(f"Folder does not exist, making directory: {TEMP_FOLDER}")
 
     # Make newline be blank, prevents extra empty lines from happening
@@ -1588,20 +1649,22 @@ def main():
          sg.Radio(EXP_RADIO_VID_TEXT, EXP_RADIO_GROUP, default=False, key=EXP_RADIO_VID_KEY),
          sg.Radio(EXP_RADIO_PREVIEW_TEXT, EXP_RADIO_GROUP, default=False, key=EXP_RADIO_PREVIEW_KEY)],
         [sg.Text("Save Images to Folder:"),
-         sg.In(default_text="/media/pi/Seagate Portable Drive", size=(25, 1), enable_events=True, key=PIC_SAVE_FOLDER_KEY),
-         sg.FolderBrowse(initial_folder="/media/pi/Seagate Portable Drive")],
+         sg.In(default_text=PIC_SAVE_FOLDER, size=(25, 1), enable_events=True, key=PIC_SAVE_FOLDER_KEY),
+         sg.FolderBrowse(initial_folder=PIC_SAVE_FOLDER)],
         [sg.Button(START_EXPERIMENT, disabled=True), sg.Button(PAUSE_EXPERIMENT, disabled=True),
          sg.Button(RESUME_EXPERIMENT, disabled=True), sg.Button(STOP_EXPERIMENT, disabled=True)]
     ]
     
     # Tab 2: Movement Tab + Crosshair overlay + Corner capture
     crosshair_layout = [
-        [sg.Checkbox("Show Crosshair Overlay", key="--XHAIR_ON--", default=True)],
-        [sg.Button("-1", key="--XHAIR_DEC--", size=(4, 1)),
+        [sg.Checkbox("Show Crosshair Overlay", key="--XHAIR_ON--", default=supports_crosshair_overlay, disabled=(not supports_crosshair_overlay))],
+        [sg.Button("-1", key="--XHAIR_DEC--", size=(4, 1), disabled=(not supports_crosshair_overlay)),
          sg.Text("Radius (px):"),
-         sg.InputText("100", size=(5, 1), key="--XHAIR_RADIUS--", enable_events=True),
-         sg.Button("+1", key="--XHAIR_INC--", size=(4, 1))]
+         sg.InputText("100", size=(5, 1), key="--XHAIR_RADIUS--", enable_events=True, disabled=(not supports_crosshair_overlay)),
+         sg.Button("+1", key="--XHAIR_INC--", size=(4, 1), disabled=(not supports_crosshair_overlay))]
     ]
+    if not supports_crosshair_overlay:
+        crosshair_layout.append([sg.Text("Overlay unavailable on this backend.")])
 
     corner_layout = [
         [sg.Text("Rows/Cols:"), sg.Input("6", size=(4,1), key="--NUM_ROWS--"), sg.Input("8", size=(4,1), key="--NUM_COLS--"),
@@ -1756,7 +1819,7 @@ def main():
                     if camera.preview:
                         camera.start_preview(alpha=PREVIEW_ALPHA, fullscreen=False, window=(x_win_preview, y_win_preview + PREVIEW_WINDOW_OFFSET, PREVIEW_WIDTH, PREVIEW_HEIGHT))
                         # If crosshair overlay is on, move it with the preview window
-                        if values.get("--XHAIR_ON--", True):
+                        if supports_crosshair_overlay and values.get("--XHAIR_ON--", True):
                             try:
                                 current_rad = int(values.get("--XHAIR_RADIUS--", WL.CIRCLE_RADIUS))
                             except (TypeError, ValueError):
@@ -2075,7 +2138,7 @@ def main():
             WL.CIRCLE_RADIUS = current_rad
             window["--XHAIR_RADIUS--"].update(str(current_rad))
             values["--XHAIR_RADIUS--"] = str(current_rad)
-            if values.get("--XHAIR_ON--", True):
+            if supports_crosshair_overlay and values.get("--XHAIR_ON--", True):
                 # Update overlay on preview
                 x_win_preview, y_win_preview = get_window_location_from_pid(preview_win_id)
                 preview_rect = (x_win_preview, y_win_preview + PREVIEW_WINDOW_OFFSET, PREVIEW_WIDTH, PREVIEW_HEIGHT)
@@ -2098,7 +2161,10 @@ def main():
         if event in WLC.WELL_LOCATION_EVENTS or event in [WLC.ROW_KEY, WLC.COL_KEY, WLC.SAVE_FOLDER_KEY]:
             WLC.event_manager(event, values, window)
         elif event == "--XHAIR_ON--":
-            if values.get("--XHAIR_ON--", True):
+            if not supports_crosshair_overlay:
+                window["--XHAIR_ON--"].update(value=False)
+                crosshair_overlay = None
+            elif values.get("--XHAIR_ON--", True):
                 try:
                     current_rad = int(values.get("--XHAIR_RADIUS--", WL.CIRCLE_RADIUS))
                 except (TypeError, ValueError):
@@ -2135,6 +2201,7 @@ def main():
 
     # Out of While Loop
     camera.stop_preview()
+    camera.close()
     
     # Closing Window
     window.close()

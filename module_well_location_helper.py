@@ -163,6 +163,9 @@ def create_crosshair_overlay(camera, radius, thickness, color_bgr, alpha, previe
     preview_window: (x, y, w, h) matches camera preview window.
     Returns the overlay object.
     """
+    if not getattr(camera, "supports_overlay", True):
+        return None
+
     x, y, w, h = preview_window
     # PiCamera overlay requires width multiple of 32, height multiple of 16
     w_pad = int((w + 31) // 32 * 32)
