@@ -1556,6 +1556,16 @@ def main():
     print(f"Camera backend active: {getattr(camera, 'backend_name', 'unknown')}")
     camera.framerate = 32
     supports_crosshair_overlay = bool(getattr(camera, "supports_overlay", True))
+    print(
+        "Crosshair diagnostic:",
+        {
+            "camera_type": type(camera).__name__,
+            "backend_name": getattr(camera, "backend_name", "unknown"),
+            "supports_overlay_attr": getattr(camera, "supports_overlay", None),
+            "supports_crosshair_overlay": supports_crosshair_overlay,
+            "camera_service_module": getattr(type(camera), "__module__", "unknown"),
+        },
+    )
     if not supports_crosshair_overlay:
         print("Crosshair overlay is not supported by this camera backend.")
     # MHT: 270

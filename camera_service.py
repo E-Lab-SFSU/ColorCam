@@ -265,7 +265,8 @@ class LibcameraBackend(BaseCameraBackend):
     Picamera2/libcamera backend.
 
     Notes:
-    - Overlay APIs are not directly compatible with PiCamera overlays.
+    - The legacy GUI still produces PiCamera-style RGBA overlay buffers, so
+      this backend adapts them to Picamera2 preview overlays.
     - Preview window movement in the legacy GUI may be best-effort depending
       on the preview backend available on the target system.
     """
@@ -276,6 +277,8 @@ class LibcameraBackend(BaseCameraBackend):
 
         self.picam2 = Picamera2()
         self._overlay = None
+        self._overlay_array = None
+        self._overlay_counter = 0
         self._previewing = False
         self._recording = False
         self._encoder = None
@@ -316,6 +319,8 @@ class LibcameraBackend(BaseCameraBackend):
         if was_running:
             self.picam2.start()
             self._started = True
+            if self._overlay_array is not None:
+                self._apply_preview_overlay(self._overlay_array)
 
     def _configure_preview(self, res: Tuple[int, int], rotation: int):
         kwargs = {"main": {"size": tuple(res)}}
@@ -334,6 +339,8 @@ class LibcameraBackend(BaseCameraBackend):
             except Exception:
                 # Keep running without a dedicated preview window.
                 pass
+        if self._overlay_array is not None:
+            self._apply_preview_overlay(self._overlay_array)
         self._previewing = True
 
     def stop_preview(self):
@@ -366,15 +373,77 @@ class LibcameraBackend(BaseCameraBackend):
             return
         self.picam2.capture_file(path)
 
+    def _overlay_setter(self):
+        setter = getattr(self.picam2, "set_overlay", None)
+        if setter is not None:
+            return setter, True
+        preview = getattr(self.picam2, "_preview", None)
+        setter = getattr(preview, "set_overlay", None) if preview is not None else None
+        if setter is not None:
+            return setter, True
+        setter = getattr(self.picam2, "add_overlay", None)
+        return setter, False
+
+    def _apply_preview_overlay(self, overlay_rgba):
+        setter, supports_clear = self._overlay_setter()
+        if setter is None:
+            raise RuntimeError("Picamera2 preview overlays are not available.")
+
+        if overlay_rgba is None:
+            if supports_clear:
+                try:
+                    setter(None)
+                    return
+                except Exception:
+                    pass
+
+            if self._overlay_array is not None:
+                blank = np.zeros_like(self._overlay_array)
+            else:
+                blank = np.zeros((self._resolution[1], self._resolution[0], 4), dtype=np.uint8)
+            setter(blank)
+            return
+
+        setter(overlay_rgba)
+
     def add_overlay(self, buffer, size, window, alpha: int = 255):
-        # PiCamera-style overlays are not supported in this backend yet.
-        return None
+        del alpha
+        if np is None or buffer is None or size is None:
+            return None
+
+        width, height = int(size[0]), int(size[1])
+        try:
+            rgba = np.frombuffer(buffer, dtype=np.uint8).reshape((height, width, 4))
+        except Exception:
+            return None
+
+        win_w = int(window[2]) if window and len(window) >= 4 else width
+        win_h = int(window[3]) if window and len(window) >= 4 else height
+        win_w = max(1, min(win_w, width))
+        win_h = max(1, min(win_h, height))
+        overlay_rgba = rgba[:win_h, :win_w, :].copy()
+
+        self._apply_preview_overlay(overlay_rgba)
+        self._overlay_array = overlay_rgba
+        self._overlay_counter += 1
+        self._overlay = self._overlay_counter
+        return self._overlay
 
     def remove_overlay(self, overlay=None):
+        if self._overlay is None:
+            return
+        if overlay is not None and overlay != self._overlay:
+            return
+
+        self._apply_preview_overlay(None)
         self._overlay = None
+        self._overlay_array = None
 
     def supports_overlay(self) -> bool:
-        return False
+        # Picamera2 preview windows are documented to support overlays.
+        # We advertise support whenever Picamera2/numpy are available so the
+        # legacy GUI does not grey out the control before a preview exists.
+        return Picamera2 is not None and np is not None
 
     def set_control(self, name: str, value):
         if name == "resolution":
