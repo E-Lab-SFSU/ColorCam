@@ -377,6 +377,10 @@ class LibcameraBackend(BaseCameraBackend):
         setter = getattr(self.picam2, "set_overlay", None)
         if setter is not None:
             return setter, True
+        preview = getattr(self.picam2, "_preview", None)
+        setter = getattr(preview, "set_overlay", None) if preview is not None else None
+        if setter is not None:
+            return setter, True
         setter = getattr(self.picam2, "add_overlay", None)
         return setter, False
 
@@ -436,8 +440,10 @@ class LibcameraBackend(BaseCameraBackend):
         self._overlay_array = None
 
     def supports_overlay(self) -> bool:
-        setter, _ = self._overlay_setter()
-        return np is not None and setter is not None
+        # Picamera2 preview windows are documented to support overlays.
+        # We advertise support whenever Picamera2/numpy are available so the
+        # legacy GUI does not grey out the control before a preview exists.
+        return Picamera2 is not None and np is not None
 
     def set_control(self, name: str, value):
         if name == "resolution":
