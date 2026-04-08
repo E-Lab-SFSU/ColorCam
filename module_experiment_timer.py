@@ -1,27 +1,20 @@
 """
-Module for setting how long to run experiment
+Module for configuring how many experiment rounds to run.
 
-TODO:
--Create sample loop like Arduino?
--Create sample loop using time.sleep?
-- Display time left until next run and time left until experiment is done.
-
-Changelog:
-7-19-2022: Added in functions to create layout, check for digits, and to collect time values.
+Each round is one full pass through the loaded well list. The user also
+provides the interval to wait between completed rounds.
 """
 
 import FreeSimpleGUI as sg
 import time
 
-DEFAULT_TOTAL_HOURS = "0"
-DEFAULT_TOTAL_MIN = "3"
-DEFAULT_RUN_MIN = "1"
+DEFAULT_ROUND_COUNT = "1"
+DEFAULT_ROUND_INTERVAL_MIN = "1"
 
-TOTAL_HOURS_KEY = "-HOURS-"
-TOTAL_MIN_KEY = "-MIN-"
-RUN_MIN_KEY = "-RUN_MIN-"
+ROUND_COUNT_KEY = "-ROUND_COUNT-"
+ROUND_INTERVAL_MIN_KEY = "-ROUND_INTERVAL_MIN-"
 
-TIME_KEY_LIST = [TOTAL_HOURS_KEY, TOTAL_MIN_KEY, RUN_MIN_KEY]
+ROUND_INPUT_KEY_LIST = [ROUND_COUNT_KEY, ROUND_INTERVAL_MIN_KEY]
 
 
 # Define function to check an InputText key for digits only
@@ -35,170 +28,87 @@ def check_for_digits_in_key(key_str, window, event, values):
 
 
 def get_time_layout():
-    time_size = (3, 1)
+    input_size = (5, 1)
     
     time_layout = [
-                    [sg.Text("How long will I collect pictures?")],
-                    [sg.Text("Hour(s):"), sg.InputText(DEFAULT_TOTAL_HOURS, size=time_size, enable_events=True, key=TOTAL_HOURS_KEY)],
-                    [sg.Text("Min(s) : "), sg.InputText(DEFAULT_TOTAL_MIN, size=time_size, enable_events=True, key=TOTAL_MIN_KEY)],
-                    [sg.Text("How long will I wait between each run?")],
-                    [sg.Text("Min(s) : "), sg.InputText(DEFAULT_RUN_MIN, size=time_size, enable_events=True, key=RUN_MIN_KEY)]
+                    [sg.Text("How many rounds of photos should I collect?")],
+                    [sg.Text("Rounds:"), sg.InputText(DEFAULT_ROUND_COUNT, size=input_size, enable_events=True, key=ROUND_COUNT_KEY)],
+                    [sg.Text("How long should I wait between rounds?")],
+                    [sg.Text("Min(s):"), sg.InputText(DEFAULT_ROUND_INTERVAL_MIN, size=input_size, enable_events=True, key=ROUND_INTERVAL_MIN_KEY)]
                   ]
     return time_layout
 
 
-def get_hour_min(event, values):
-    # Assumes values found in the InputText are integers.
-    # Demonstrates that the time values are collected.
+def validate_round_settings(values):
+    errors = []
 
-    total_hours = int(values[TOTAL_HOURS_KEY])
-    total_minutes = int(values[TOTAL_MIN_KEY])
-    print(f"Experiment will run for {total_hours} hours and {total_minutes} minutes")
-    
-    # Convert to seconds for time.sleep()
-    total_seconds = total_hours*60*60 + total_minutes*60
-    print(f"or experiment will run for {total_seconds} seconds")
+    round_count_text = str(values.get(ROUND_COUNT_KEY, "")).strip()
+    interval_text = str(values.get(ROUND_INTERVAL_MIN_KEY, "")).strip()
 
-    run_minutes = int(values[RUN_MIN_KEY])
-    run_seconds = run_minutes * 60
-    print(f"After collecting data from wells, will wait {run_minutes} minutes (or {run_seconds} seconds) before collecting data again")
+    if len(round_count_text) == 0:
+        errors.append("Enter the number of rounds.")
+    elif int(round_count_text) < 1:
+        errors.append("Number of rounds must be at least 1.")
 
-    # Dummy values for fasting code testing
-    # total_seconds = 61
-    # run_seconds = 10
-    # demo_start_experiment_1(total_seconds, run_seconds)
-    # demo_start_experiment_2(total_seconds, run_seconds)
-    return total_seconds, run_seconds
+    if len(interval_text) == 0:
+        errors.append("Enter the interval between rounds.")
+    elif int(interval_text) < 0:
+        errors.append("Interval between rounds must be 0 minutes or greater.")
+
+    return errors
 
 
-def demo_start_experiment_1(total_seconds, run_seconds):
+def get_round_settings(values):
+    errors = validate_round_settings(values)
+    if errors:
+        raise ValueError("; ".join(errors))
+
+    round_count = int(values[ROUND_COUNT_KEY])
+    interval_minutes = int(values[ROUND_INTERVAL_MIN_KEY])
+    interval_seconds = interval_minutes * 60
+
+    print(f"Experiment will run for {round_count} round(s)")
+    print(
+        f"Between completed rounds, will wait {interval_minutes} minute(s) "
+        f"(or {interval_seconds} second(s)) before collecting data again"
+    )
+
+    return round_count, interval_seconds
+
+
+def demo_start_experiment_1(round_count, interval_seconds):
     print("demo_start_experiment_1")
-    # Practice function to practice
-    # While loop using time.sleep to pause the script
 
-    # demo location list init
     location_list = [1, 2, 3, 4]
 
-    # Init start time variable
-    start = time.monotonic()
-
-    # Init location index to zero
-    location_index = 0
-
-    elapsed_seconds = -1
-
-    counter = 0
-
-    # While elapsed time is less than total time
-    while elapsed_seconds < total_seconds:
-        #  Go to location (print it out)
-        print(f"Run #{counter}")
+    for round_index in range(round_count):
+        print(f"Round #{round_index + 1}")
         for loc in location_list:
             print(loc)
             time.sleep(1)
 
-        #  Get current time
-        current_time = time.monotonic()
-
-        #  Calculate elapsed time (current - start)
-        elapsed_seconds = current_time - start
-
-        print(f"elapsed_seconds: {elapsed_seconds:.2f}")
-
-        # Display time left until end of experiment
-        print(f"Time left until end of experiment: {(total_seconds - elapsed_seconds):.1f} sec")
-
-        # if location_index >= len(location_list):
-        #     location_index = 0
-            # break  # temp
-
-        #  time.sleep and wait run_seconds
-
-        # Note: Caused GUI to pause and you can't interact with it!
-        #       May need threading, which is what my GUI does.
-
-        # TODO: Figure out how to avoid putting this if statement here.
-        # Check if sleeping will go over the time limit
-        #   If it doesn't, sleep until next run
-        #   If it does, time to break the loop
-        if elapsed_seconds + run_seconds < total_seconds:
-            print(f"Will wait {run_seconds} seconds until collecting data again")
-            time.sleep(run_seconds)
-        elif elapsed_seconds + run_seconds > total_seconds:
-            print(f"Doing another run will go over set time limit, stopping experiment.")
-            break
-
-        counter += 1
+        if round_index < (round_count - 1):
+            print(f"Will wait {interval_seconds} seconds until collecting data again")
+            time.sleep(interval_seconds)
 
     print("Done running experiment")
 
-    #  iterate location index by one or reset to zero if hit end of list.
 
-
-def demo_start_experiment_2(total_seconds, run_seconds):
-    # While loop using time.monotonic to activate certain conditions the script
-
-    # TODO: Display time left until end of experiment and time left until next run.
+def demo_start_experiment_2(round_count, interval_seconds):
     print("demo_start_experiment_2")
-    # Practice function to practice
-    # While loop using time.sleep to pause the script
 
-    # demo location list init
     location_list = [1, 2, 3, 4]
 
-    # Init start time variable
-    start = time.monotonic()
-    run_start = time.monotonic()
-
-    # Init location index to zero
-    location_index = 0
-
-    elapsed_seconds = -1
-    run_time_left = 0
-    run_elapsed = -1
-    counter = 0
-
-    # While elapsed time is less than total time
-    while elapsed_seconds < total_seconds:
-
-        # For testing, break after 3 runs
-        # if counter >= 3:
-        #     break
-
-        if run_time_left <= 0:
-            # Run experiment
-            if counter > 0:
-                print(f"Done Waiting {run_seconds} sec")
-
-            print(f"Run #{counter}")
-            for loc in location_list:
-                print(loc)
-                time.sleep(1)
-            counter += 1
-
-            # Reset run_time_left
-            run_time_left = run_seconds
-
-            # Reset run_start
-            run_start = time.monotonic()
-
-            print(f"Will wait {run_seconds} sec before doing next run.")
-
-            # Display time left until end of experiment
-            print(f"Time left until end of experiment: {(total_seconds - elapsed_seconds):.1f} sec")
-
-        #  Get current time
-        current_time = time.monotonic()
-
-        #  Calculate elapsed time (current - start)
-        elapsed_seconds = current_time - start
-        run_elapsed = current_time - run_start
-        run_time_left = run_seconds - run_elapsed
-
-        # print(f"run_elapsed: {run_elapsed}")
-        # print(f"run_time_left: {run_time_left}")
-
-        # print(f"elapsed_seconds: {elapsed_seconds:.2f}")
+    for round_index in range(round_count):
+        print(f"Round #{round_index + 1}")
+        for loc in location_list:
+            print(loc)
+            time.sleep(1)
+        if round_index < (round_count - 1):
+            print(f"Will wait {interval_seconds} sec before doing next round.")
+            wait_start = time.monotonic()
+            while (time.monotonic() - wait_start) < interval_seconds:
+                time.sleep(0.25)
 
     print("Done running experiment")
 
@@ -298,7 +208,7 @@ def main():
     
     # Set up layout
     layout = [
-                get_time_layout(),
+                *get_time_layout(),
                 [sg.Button("Start")]
              ]
     
@@ -309,14 +219,19 @@ def main():
     while True:
         event, values = window.read()
         
-        for time_key in TIME_KEY_LIST:
+        for time_key in ROUND_INPUT_KEY_LIST:
             check_for_digits_in_key(time_key, window, event, values)
         
         if event == sg.WIN_CLOSED:
             break
         elif event == "Start":
             print("Pressed Start")
-            get_hour_min(event, values)
+            errors = validate_round_settings(values)
+            if errors:
+                for error in errors:
+                    print(error)
+                continue
+            get_round_settings(values)
     
     pass
 

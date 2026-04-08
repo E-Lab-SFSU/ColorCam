@@ -228,6 +228,7 @@ NUMERIC_KEYS = [
     "-PREVIEW HEIGHT KEY-",
     "-ALPHA KEY-",
     "-EXPO SETTLE TIME-",
+    *ET.ROUND_INPUT_KEY_LIST,
 ]
 
 # Small-slice sleep so Stop is responsive
@@ -237,6 +238,19 @@ def sleep_with_stop(total_seconds, stop_event, chunk=0.25):
         wait = min(chunk, total_seconds - elapsed)
         time.sleep(wait)
         elapsed += wait
+
+
+def sleep_with_stop_and_pause(total_seconds, stop_event, pause_event, chunk=0.25):
+    elapsed = 0.0
+    while elapsed < total_seconds and not stop_event.is_set():
+        while pause_event.is_set() and not stop_event.is_set():
+            time.sleep(min(chunk, 0.1))
+        if stop_event.is_set():
+            break
+        wait = min(chunk, total_seconds - elapsed)
+        time.sleep(wait)
+        elapsed += wait
+    return not stop_event.is_set()
 
 
 def settle_camera_gain(camera, max_wait_seconds=6.0, poll_seconds=0.5, epsilon=0.02):
@@ -449,26 +463,14 @@ def run_experiment2(event, values, thread_event, pause_event, camera, preview_wi
     """
     # global camera
     global is_running_experiment
-    print("run_experiment with timer")
+    print("run_experiment with round scheduling")
     
     if camera.preview:
         camera.stop_preview()
     
-    # Get Timer Values
-    total_seconds, run_seconds = ET.get_hour_min(event, values)
-    
-    # Dummy Data for faster code testing, delete when ready
-    # total_seconds = 40
-    # run_seconds = 10
-        
+    round_count, interval_seconds = ET.get_round_settings(values)
     start_time = time.monotonic()
-    
-    elapsed_seconds = -1
-    
-    run_start = time.monotonic()
-    run_time_left = 0
-    run_elapsed = -1
-    
+
     # Get CSV Filename
     csv_filename = values[OPEN_CSV_FILEBROWSE_KEY]
     
@@ -477,6 +479,11 @@ def run_experiment2(event, values, thread_event, pause_event, camera, preview_wi
     
     # Get GCODE Location List from path_list
     gcode_string_list = P.convert_list_to_gcode_strings(path_list)
+    total_wells = len(gcode_string_list)
+    if total_wells == 0:
+        print("Selected CSV has no well locations. Stopping experiment.")
+        is_running_experiment = False
+        return
     
     # Go into Absolute Positioning Mode
     printer.run_gcode(C.ABSOLUTE_POS)
@@ -490,127 +497,89 @@ def run_experiment2(event, values, thread_event, pause_event, camera, preview_wi
         GCS.SAVE_CSV_FOLDER = folder_path
         GCS.init_csv_file()
     
-    # Create While loop to check if thread_event is not set (closing)
-    count_run = 0
-    while not thread_event.is_set():
+    completed_rounds = 0
+    while completed_rounds < round_count and not thread_event.is_set():
         # Honor pause requests
         while pause_event.is_set() and not thread_event.is_set():
             time.sleep(0.1)
-        
-        # TODO: Put in the rest of the code for Pic, Video, Preview from 3dprinter_start_experiment or prepare_experiment
-        
-        
-        
-        
-        if run_time_left <= 0:
-            print("=========================")
-            print("Run #", count_run)
-            well_number = 1
-            
-            for location in gcode_string_list:
-                # Respect pause while iterating wells
-                while pause_event.is_set() and not thread_event.is_set():
-                    time.sleep(0.1)
-                if thread_event.is_set():
-                    break
-                printer.run_gcode(location)
-                print("Going to Well Number:", well_number)
-                if well_number == 1:
-                    print(f"Pausing at well {well_number} for 10 seconds")
-                    sleep_with_stop(10, thread_event)
-                    print("pause is complete")
-                else:
-                    sleep_with_stop(4, thread_event)
-                if values[EXP_RADIO_PREVIEW_KEY] == True:
-                    print("Preview Mode is On, only showing preview camera \n")
-                    # camera.start_preview(fullscreen=False, window=(30, 30, 500, 500))
-                    # time.sleep(5)
-                    
-                    # camera.stop_preview()
-                elif values[EXP_RADIO_VID_KEY] == True:
-                    print("Recording Video Footage")
-                    if folder_path:
-                        file_full_path = P.get_file_full_path(folder_path, well_number, total_wells=len(gcode_string_list))
-                    # TODO: Change to Video Captures
-                    # camera.capture(file_full_path)ffd4
-                elif values[EXP_RADIO_PIC_KEY] == True:
-                    print("Taking Pictures Only")
-                    if folder_path:
-                        file_full_path = P.get_file_full_path(folder_path, well_number, total_wells=len(gcode_string_list))
-                    # print(file_full_path)
-                    
-                    # Change Image Capture Resolution
-                    # pic_width = PIC_WIDTH
-                    # pic_height = PIC_HEIGHT
-                    
-                    #camera.stop_preview()
-                    #camera.resolution = (pic_width, pic_height)
-                    # time.sleep(.1)
-                    #camera.capture(file_full_path)
-                    # camera.start_preview()
-                    #start_camera_preview(event, values, camera, preview_win_id)
-                    
-                    if folder_path:
-                        get_well_picture(camera, file_full_path)
-                        data_row = GCS.gen_cam_data(file_full_path, camera)
-                        GCS.append_to_csv_file(data_row)
-                    
-                    # Return to streaming resolution: 640 x 480 (or it will crash)
-                    # Bug: Crashes anyway because of threading
-                    #camera.resolution = (VID_WIDTH, VID_HEIGHT)
-                    # TODO: Look up Camera settings to remove white balance (to deal with increasing brightness)
-                # Outside if/elif chain
-                well_number += 1
-            # Outside of location for loop
-            count_run += 1
-            # Reset run_time_left
-            run_time_left = run_seconds
-
-            # Reset run_start
-            run_start = time.monotonic()
-
-            print(f"Will wait {run_seconds} sec before doing next run.")
-
-            # Display time left until end of experiment
-            print(f"Time left until end of experiment: {(total_seconds - elapsed_seconds):.1f} sec")
-            # May implement the following to break out of loop first. Helpful for lots of wells
-            """    
-            if is_running_experiment == False:
-                print("Stopping Experiment...")
-                return
-            """
-            
-        # Out of if run_time < 0 statement
-        
-        
-        current_time = time.monotonic()
-        elapsed_seconds = current_time - start_time
-        
-        run_elapsed = current_time - run_start
-        run_time_left = run_seconds - run_elapsed
-        
-        # if elapsed_seconds + run_seconds < total_seconds:
-            # print(f"Will wait {run_seconds} seconds until collecting data again")
-            # time.sleep(run_seconds)
-        if elapsed_seconds + run_seconds > total_seconds:
-            print(f"Doing another run will go over set time limit, stopping experiment.")
-            is_running_experiment = False
+        if thread_event.is_set():
             break
-        
-        
-        # Use For Loop to go through each location
-        # TODO: Preview doesn't show preview camera
-        # Original
-        # for location in gcode_string_list:
-            # # print(location)
-            # printer.run_gcode(location)
-            # time.sleep(5)
-        
-        
+
+        current_round = completed_rounds + 1
+        print("=========================")
+        print(f"Round {current_round} of {round_count}")
+        well_number = 1
+        round_complete = True
+
+        for location in gcode_string_list:
+            # Respect pause while iterating wells
+            while pause_event.is_set() and not thread_event.is_set():
+                time.sleep(0.1)
+            if thread_event.is_set():
+                round_complete = False
+                break
+
+            printer.run_gcode(location)
+            print("Going to Well Number:", well_number)
+            if well_number == 1:
+                print(f"Pausing at well {well_number} for 10 seconds")
+                if not sleep_with_stop_and_pause(10, thread_event, pause_event):
+                    round_complete = False
+                    break
+                print("pause is complete")
+            else:
+                if not sleep_with_stop_and_pause(4, thread_event, pause_event):
+                    round_complete = False
+                    break
+
+            if values[EXP_RADIO_PREVIEW_KEY] == True:
+                print("Preview Mode is On, only showing preview camera \n")
+                # camera.start_preview(fullscreen=False, window=(30, 30, 500, 500))
+                # time.sleep(5)
+                
+                # camera.stop_preview()
+            elif values[EXP_RADIO_VID_KEY] == True:
+                print("Recording Video Footage")
+                if folder_path:
+                    file_full_path = P.get_file_full_path(folder_path, well_number, total_wells=total_wells)
+                # TODO: Change to Video Captures
+                # camera.capture(file_full_path)
+            elif values[EXP_RADIO_PIC_KEY] == True:
+                print("Taking Pictures Only")
+                if folder_path:
+                    file_full_path = P.get_file_full_path(folder_path, well_number, total_wells=total_wells)
+                
+                if folder_path:
+                    get_well_picture(camera, file_full_path)
+                    data_row = GCS.gen_cam_data(file_full_path, camera)
+                    GCS.append_to_csv_file(data_row)
+
+            well_number += 1
+
+        if not round_complete or thread_event.is_set():
+            break
+
+        completed_rounds += 1
+        print(f"Completed round {completed_rounds} of {round_count}")
+
+        if completed_rounds >= round_count:
+            break
+
+        if interval_seconds > 0:
+            next_round = completed_rounds + 1
+            print(f"Will wait {interval_seconds} sec before round {next_round}.")
+            if not sleep_with_stop_and_pause(interval_seconds, thread_event, pause_event):
+                break
+            print(f"Done waiting {interval_seconds} sec")
+        else:
+            print("Round interval is 0 seconds, starting next round immediately.")
+
+    elapsed_seconds = time.monotonic() - start_time
     print("=========================")
     print("Experiment Stopped")
     print("=========================")
     print(f"Ran experiment for {elapsed_seconds:.1f} seconds, or {elapsed_seconds/60:.1f} minutes, or {elapsed_seconds/60/60:.1f} hours")
+    print(f"Completed {completed_rounds} round(s) out of {round_count}")
     print(f"Data saved to: {folder_path}")
     print("-------------------------")
     is_running_experiment = False
@@ -1894,6 +1863,13 @@ def main():
         # Tab 1 (Experiment):
         elif event == START_EXPERIMENT:
             print("You pressed Start Experiment")
+
+            schedule_errors = ET.validate_round_settings(values)
+            if schedule_errors:
+                print("Cannot start experiment:")
+                for error in schedule_errors:
+                    print(f"- {error}")
+                continue
             
             # Set is_running_experiment to True, we are now running an experiment
             is_running_experiment = True
