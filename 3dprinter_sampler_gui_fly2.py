@@ -1913,7 +1913,7 @@ def main():
     last_snake_csv = os.path.join(os.getcwd(), "testing", "Well_Location", "snake_path.csv")
 
     # Create window and show it without plot
-    window = sg.Window("3D Printer GUI Test", layout, location=(640, 36))
+    window = sg.Window("3D Printer GUI Test", layout, location=(640, 36), finalize=True)
     initialize_camera_control_panel(window, camera, supports_manual_camera_controls)
     
     
