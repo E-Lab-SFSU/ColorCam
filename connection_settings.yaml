@@ -32,7 +32,7 @@ mht:
       # timeout and reboot times are in seconds
       timeout_time: 1
       reboot_wait_time: 8
-      camera_backend: picamera
+      camera_backend: libcam
       camera_device_index: 0
       # maximum dimensions in mm, and travel speed in mm/sec
       max:
