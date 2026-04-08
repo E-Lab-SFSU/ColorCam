@@ -28,7 +28,7 @@ mht:
     monoprice:
       name: Monoprice Maker Select 3D Printer V2
       device_path: /dev/ttyUSB0
-      baudrate: 115200
+      baudrate: 250000
       # timeout and reboot times are in seconds
       timeout_time: 1
       reboot_wait_time: 8
