@@ -166,9 +166,9 @@ def draw_cross_hairs(image):
     return image_edit
 
 
-def crop_image_to_crosshair_circle(image, preview_size, radius):
+def crop_image_to_crosshair_circle(image, preview_size, radius, line_thickness=1):
     """
-    Return a centered BGRA crop whose visible area matches the crosshair circle.
+    Return a centered BGRA crop whose visible area stays inside the crosshair circle.
     """
     if image is None or image.size == 0:
         raise ValueError("image is empty")
@@ -178,10 +178,12 @@ def crop_image_to_crosshair_circle(image, preview_size, radius):
     preview_width = max(int(preview_size[0]), 1)
     preview_height = max(int(preview_size[1]), 1)
     radius = max(int(radius), 1)
+    line_thickness = max(int(line_thickness), 1)
 
     still_height, still_width = image.shape[:2]
     scale = min(still_width / float(preview_width), still_height / float(preview_height))
-    scaled_radius = max(int(round(radius * scale)), 1)
+    effective_preview_radius = max(radius - (line_thickness / 2.0), 0.5)
+    scaled_radius = max(int(np.floor(effective_preview_radius * scale)), 1)
 
     center_x = still_width // 2
     center_y = still_height // 2
@@ -205,10 +207,20 @@ def crop_image_to_crosshair_circle(image, preview_size, radius):
     else:
         raise ValueError("unsupported image channel layout")
 
-    yy, xx = np.ogrid[:diameter, :diameter]
-    circle_mask = ((xx - scaled_radius) ** 2 + (yy - scaled_radius) ** 2) <= (scaled_radius ** 2)
     alpha_mask = np.zeros((diameter, diameter), dtype=np.uint8)
-    alpha_mask[circle_mask] = 255
+    if cv2 is not None:
+        cv2.circle(
+            alpha_mask,
+            (scaled_radius, scaled_radius),
+            scaled_radius,
+            255,
+            thickness=-1,
+            lineType=cv2.LINE_8,
+        )
+    else:
+        yy, xx = np.ogrid[:diameter, :diameter]
+        circle_mask = ((xx - scaled_radius) ** 2 + (yy - scaled_radius) ** 2) <= (scaled_radius ** 2)
+        alpha_mask[circle_mask] = 255
     crop_bgra[..., 3] = alpha_mask
     return crop_bgra
 

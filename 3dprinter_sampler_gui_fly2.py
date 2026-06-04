@@ -861,19 +861,19 @@ def write_crosshair_cropped_png(source_path, target_path, capture_state):
         source_image,
         preview_size=capture_state["preview_size"],
         radius=capture_state["radius"],
+        line_thickness=WL.CIRCLE_THICKNESS,
     )
     if not cv2.imwrite(target_path, cropped_image):
         raise RuntimeError(f"Unable to save cropped PNG: {target_path}")
 
 
 def capture_still(camera, file_full_path):
-    """Safely capture a still by pausing preview and restoring resolution."""
-    backend_name = str(getattr(camera, "backend_name", ""))
-    is_usb_backend = ("USBCameraBackend" in backend_name)
+    """Safely capture a still while keeping the live preview running."""
     capture_state = get_crosshair_capture_state()
     crop_enabled = bool(capture_state["enabled"])
     capture_path = file_full_path
     temp_capture_path = None
+    capture_res = (PIC_WIDTH, PIC_HEIGHT)
 
     if crop_enabled:
         temp_fd, temp_capture_path = tempfile.mkstemp(prefix="colorcam_capture_", suffix=C.FILENAME_PICTURE_EXTENSION)
@@ -883,26 +883,8 @@ def capture_still(camera, file_full_path):
     success = False
     try:
         with CAMERA_LOCK:
-            was_previewing = bool(camera.preview)
-            if was_previewing and not is_usb_backend:
-                camera.stop_preview()
-            original_res = camera.resolution
-            try:
-                if is_usb_backend:
-                    # USB cameras often behave better when capture uses current stream settings.
-                    camera.capture(capture_path)
-                else:
-                    camera.resolution = (PIC_WIDTH, PIC_HEIGHT)
-                    camera.capture(capture_path)
-                success = True
-            finally:
-                try:
-                    camera.resolution = original_res
-                except Exception:
-                    pass
-                if was_previewing and not is_usb_backend:
-                    preview_window = (PREVIEW_LOC_X, PREVIEW_LOC_Y, PREVIEW_WIDTH, PREVIEW_HEIGHT)
-                    camera.start_preview(alpha=PREVIEW_ALPHA, fullscreen=False, window=preview_window)
+            camera.capture(capture_path, res=capture_res)
+            success = True
 
         if success and crop_enabled and temp_capture_path is not None:
             write_crosshair_cropped_png(temp_capture_path, file_full_path, capture_state)

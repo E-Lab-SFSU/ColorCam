@@ -18,7 +18,7 @@ def build_test_image(width, height):
 def test_scaled_output_size():
     image = build_test_image(300, 200)
     cropped = crop_image_to_crosshair_circle(image, preview_size=(100, 100), radius=20)
-    assert cropped.shape == (80, 80, 4), f"unexpected cropped shape: {cropped.shape}"
+    assert cropped.shape == (78, 78, 4), f"unexpected cropped shape: {cropped.shape}"
 
 
 def test_transparent_corners():
@@ -41,7 +41,7 @@ def test_radius_clamping():
 def test_aspect_ratio_min_scale():
     image = build_test_image(400, 200)
     cropped = crop_image_to_crosshair_circle(image, preview_size=(100, 100), radius=20)
-    assert cropped.shape == (80, 80, 4), f"expected min-scale diameter of 80, got {cropped.shape}"
+    assert cropped.shape == (78, 78, 4), f"expected in-circle diameter of 78, got {cropped.shape}"
 
 
 def main():

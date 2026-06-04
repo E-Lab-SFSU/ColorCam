@@ -1154,8 +1154,8 @@ class LegacyCameraAdapter:
     def led(self, value):
         self._service.set_control("led", bool(value))
 
-    def capture(self, path):
-        self._service.capture_still(path)
+    def capture(self, path, res=None):
+        self._service.capture_still(path, res=res)
 
     def add_overlay(self, buffer, size=None, fullscreen=False, window=None, alpha=255, **kwargs):
         del fullscreen, kwargs
