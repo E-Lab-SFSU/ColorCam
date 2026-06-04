@@ -5,16 +5,22 @@ Each round is one full pass through the loaded well list. The user also
 provides the interval to wait between completed rounds.
 """
 
-import FreeSimpleGUI as sg
+try:
+    import FreeSimpleGUI as sg
+except ImportError:
+    sg = None
 import time
 
 DEFAULT_ROUND_COUNT = "1"
 DEFAULT_ROUND_INTERVAL_MIN = "1"
+DEFAULT_ASSAY_TRIM_PERCENT = "10"
 
 ROUND_COUNT_KEY = "-ROUND_COUNT-"
 ROUND_INTERVAL_MIN_KEY = "-ROUND_INTERVAL_MIN-"
+ASSAY_TRIM_PERCENT_KEY = "-ASSAY_TRIM_PERCENT-"
+MAX_ASSAY_TRIM_PERCENT = 25
 
-ROUND_INPUT_KEY_LIST = [ROUND_COUNT_KEY, ROUND_INTERVAL_MIN_KEY]
+ROUND_INPUT_KEY_LIST = [ROUND_COUNT_KEY, ROUND_INTERVAL_MIN_KEY, ASSAY_TRIM_PERCENT_KEY]
 
 
 # Define function to check an InputText key for digits only
@@ -27,14 +33,27 @@ def check_for_digits_in_key(key_str, window, event, values):
             window[key_str].update(values[key_str][:-1])
 
 
+def _parse_int_field(raw_value):
+    text = str(raw_value or "").strip()
+    if len(text) == 0:
+        return None
+    try:
+        return int(text)
+    except (TypeError, ValueError):
+        return None
+
+
 def get_time_layout():
+    if sg is None:
+        raise RuntimeError("FreeSimpleGUI is required to build the experiment-timer layout.")
     input_size = (5, 1)
     
     time_layout = [
                     [sg.Text("How many rounds of photos should I collect?")],
                     [sg.Text("Rounds:"), sg.InputText(DEFAULT_ROUND_COUNT, size=input_size, enable_events=True, key=ROUND_COUNT_KEY)],
                     [sg.Text("How long should I wait between rounds?")],
-                    [sg.Text("Min(s):"), sg.InputText(DEFAULT_ROUND_INTERVAL_MIN, size=input_size, enable_events=True, key=ROUND_INTERVAL_MIN_KEY)]
+                    [sg.Text("Min(s):"), sg.InputText(DEFAULT_ROUND_INTERVAL_MIN, size=input_size, enable_events=True, key=ROUND_INTERVAL_MIN_KEY)],
+                    [sg.Text("Trim %:"), sg.InputText(DEFAULT_ASSAY_TRIM_PERCENT, size=input_size, enable_events=True, key=ASSAY_TRIM_PERCENT_KEY)]
                   ]
     return time_layout
 
@@ -44,18 +63,41 @@ def validate_round_settings(values):
 
     round_count_text = str(values.get(ROUND_COUNT_KEY, "")).strip()
     interval_text = str(values.get(ROUND_INTERVAL_MIN_KEY, "")).strip()
+    trim_percent_text = str(values.get(ASSAY_TRIM_PERCENT_KEY, "")).strip()
+
+    round_count = _parse_int_field(round_count_text)
+    interval_minutes = _parse_int_field(interval_text)
+    trim_percent = _parse_int_field(trim_percent_text)
 
     if len(round_count_text) == 0:
         errors.append("Enter the number of rounds.")
-    elif int(round_count_text) < 1:
+    elif round_count is None:
+        errors.append("Number of rounds must be a whole number.")
+    elif round_count < 1:
         errors.append("Number of rounds must be at least 1.")
 
     if len(interval_text) == 0:
         errors.append("Enter the interval between rounds.")
-    elif int(interval_text) < 0:
+    elif interval_minutes is None:
+        errors.append("Interval between rounds must be a whole number.")
+    elif interval_minutes < 0:
         errors.append("Interval between rounds must be 0 minutes or greater.")
 
+    if len(trim_percent_text) == 0:
+        errors.append("Enter the assay trim percent.")
+    elif trim_percent is None:
+        errors.append("Assay trim percent must be a whole number.")
+    elif trim_percent < 0 or trim_percent > MAX_ASSAY_TRIM_PERCENT:
+        errors.append(f"Assay trim percent must be between 0 and {MAX_ASSAY_TRIM_PERCENT}.")
+
     return errors
+
+
+def get_trim_percent(values):
+    errors = validate_round_settings(values)
+    if errors:
+        raise ValueError("; ".join(errors))
+    return int(values[ASSAY_TRIM_PERCENT_KEY])
 
 
 def get_round_settings(values):
@@ -65,6 +107,7 @@ def get_round_settings(values):
 
     round_count = int(values[ROUND_COUNT_KEY])
     interval_minutes = int(values[ROUND_INTERVAL_MIN_KEY])
+    trim_percent = int(values[ASSAY_TRIM_PERCENT_KEY])
     interval_seconds = interval_minutes * 60
 
     print(f"Experiment will run for {round_count} round(s)")
@@ -72,8 +115,9 @@ def get_round_settings(values):
         f"Between completed rounds, will wait {interval_minutes} minute(s) "
         f"(or {interval_seconds} second(s)) before collecting data again"
     )
+    print(f"Color assay trimmed mean will use {trim_percent}% tails per channel.")
 
-    return round_count, interval_seconds
+    return round_count, interval_seconds, trim_percent
 
 
 def demo_start_experiment_1(round_count, interval_seconds):
@@ -200,6 +244,8 @@ def main2():
 
 def main():
     print("main")
+    if sg is None:
+        raise RuntimeError("FreeSimpleGUI is required to run the experiment-timer demo.")
     
     # Set up theme
     sg.theme("LightGreen")

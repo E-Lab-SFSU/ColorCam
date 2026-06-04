@@ -51,6 +51,17 @@ def build_center_roi_image(rgb):
     return image
 
 
+def build_alpha_masked_outlier_image(base_rgb, dark_rgb, bright_rgb):
+    image = np.zeros((2, 5, 4), dtype=np.uint8)
+    base_bgr = (base_rgb[2], base_rgb[1], base_rgb[0], 255)
+    dark_bgr = (dark_rgb[2], dark_rgb[1], dark_rgb[0], 255)
+    bright_bgr = (bright_rgb[2], bright_rgb[1], bright_rgb[0], 255)
+    image[:, :] = base_bgr
+    image[0, 0] = dark_bgr
+    image[0, 1] = bright_bgr
+    return image
+
+
 def write_image(path, image):
     ok = MCA.cv2.imwrite(path, image)
     assert ok, f"failed to write image: {path}"
@@ -70,7 +81,7 @@ def test_measure_mean_rgb_from_circle_roi():
     image_path = build_test_path("full_frame", ".png")
     try:
         write_image(image_path, build_center_roi_image((10, 20, 30)))
-        rgb = MCA.measure_mean_rgb(image_path, capture_state=CAPTURE_STATE)
+        rgb = MCA.measure_mean_rgb(image_path, capture_state=CAPTURE_STATE, trim_percent=0)
         assert_rgb_close(rgb, (10.0, 20.0, 30.0))
     finally:
         cleanup_paths(image_path)
@@ -84,8 +95,38 @@ def test_measure_mean_rgb_from_alpha_mask():
         image[1, 2] = (60, 50, 40, 255)
         image[0, 0] = (255, 255, 255, 0)
         write_image(image_path, image)
-        rgb = MCA.measure_mean_rgb(image_path)
+        rgb = MCA.measure_mean_rgb(image_path, trim_percent=0)
         assert_rgb_close(rgb, (25.0, 35.0, 45.0))
+    finally:
+        cleanup_paths(image_path)
+
+
+def test_zero_trim_matches_plain_mean_with_outliers():
+    image_path = build_test_path("outliers_untrimmed", ".png")
+    try:
+        image = build_alpha_masked_outlier_image(
+            base_rgb=(100, 110, 120),
+            dark_rgb=(0, 0, 0),
+            bright_rgb=(255, 255, 255),
+        )
+        write_image(image_path, image)
+        rgb = MCA.measure_mean_rgb(image_path, trim_percent=0)
+        assert_rgb_close(rgb, (105.5, 113.5, 121.5))
+    finally:
+        cleanup_paths(image_path)
+
+
+def test_trimmed_mean_resists_extreme_pixels():
+    image_path = build_test_path("outliers_trimmed", ".png")
+    try:
+        image = build_alpha_masked_outlier_image(
+            base_rgb=(100, 110, 120),
+            dark_rgb=(0, 0, 0),
+            bright_rgb=(255, 255, 255),
+        )
+        write_image(image_path, image)
+        rgb = MCA.measure_mean_rgb(image_path, trim_percent=10)
+        assert_rgb_close(rgb, (100.0, 110.0, 120.0))
     finally:
         cleanup_paths(image_path)
 
@@ -103,6 +144,7 @@ def test_per_well_baselines_stay_isolated():
             save_folder=TEMP_PARENT_DIR,
             total_wells=2,
             csv_path=csv_path,
+            trim_percent=0,
         )
 
         paths = {}
@@ -138,7 +180,12 @@ def test_color_assay_csv_layout_and_failure_blanks():
     well_2_t1_path = build_test_path("well_2_t1", ".png")
     missing_path = None
     try:
-        tracker = MCA.ColorAssayTracker(save_folder=TEMP_PARENT_DIR, total_wells=2, csv_path=csv_path)
+        tracker = MCA.ColorAssayTracker(
+            save_folder=TEMP_PARENT_DIR,
+            total_wells=2,
+            csv_path=csv_path,
+            trim_percent=0,
+        )
 
         write_image(well_1_t0_path, build_center_roi_image((10, 20, 30)))
         write_image(well_2_t0_path, build_center_roi_image((40, 50, 60)))
@@ -189,6 +236,8 @@ def main():
     tests = [
         test_measure_mean_rgb_from_circle_roi,
         test_measure_mean_rgb_from_alpha_mask,
+        test_zero_trim_matches_plain_mean_with_outliers,
+        test_trimmed_mean_resists_extreme_pixels,
         test_color_delta_math,
         test_per_well_baselines_stay_isolated,
         test_color_assay_csv_layout_and_failure_blanks,

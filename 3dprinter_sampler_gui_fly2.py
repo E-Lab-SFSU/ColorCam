@@ -282,10 +282,10 @@ def get_crosshair_capture_state():
         }
 
 
-def create_assay_tracker(folder_path, total_wells, picture_mode):
+def create_assay_tracker(folder_path, total_wells, picture_mode, trim_percent):
     if not folder_path or not picture_mode or total_wells < 1:
         return None
-    return MCA.ColorAssayTracker(folder_path, total_wells)
+    return MCA.ColorAssayTracker(folder_path, total_wells, trim_percent=trim_percent)
 
 
 def append_assay_well_block(assay_tracker, round_row, well_number, time_min, file_full_path, capture_state, current_round, capture_ok):
@@ -447,6 +447,7 @@ def run_experiment(event, values, thread_event, camera, preview_win_id):
     # Get GCODE Location List from path_list
     gcode_string_list = P.convert_list_to_gcode_strings(path_list)
     total_wells = len(gcode_string_list)
+    trim_percent = ET.get_trim_percent(values)
     if total_wells == 0:
         print("Selected CSV has no well locations. Stopping experiment.")
         is_running_experiment = False
@@ -464,7 +465,7 @@ def run_experiment(event, values, thread_event, camera, preview_win_id):
         # Initialize unique CSV camera settings file
         GCS.SAVE_CSV_FOLDER = folder_path
         GCS.init_csv_file()
-        assay_tracker = create_assay_tracker(folder_path, total_wells, values[EXP_RADIO_PIC_KEY])
+        assay_tracker = create_assay_tracker(folder_path, total_wells, values[EXP_RADIO_PIC_KEY], trim_percent)
     
     # Create While loop to check if thread_event is not set (closing)
     count_run = 0
@@ -558,7 +559,7 @@ def run_experiment2(event, values, thread_event, pause_event, camera, preview_wi
     global is_running_experiment
     print("run_experiment with round scheduling")
     
-    round_count, interval_seconds = ET.get_round_settings(values)
+    round_count, interval_seconds, trim_percent = ET.get_round_settings(values)
     interval_minutes = int(values[ET.ROUND_INTERVAL_MIN_KEY])
     start_time = time.monotonic()
 
@@ -588,7 +589,7 @@ def run_experiment2(event, values, thread_event, pause_event, camera, preview_wi
         print("Not in Preview Mode, creating folder:", folder_path)
         GCS.SAVE_CSV_FOLDER = folder_path
         GCS.init_csv_file()
-        assay_tracker = create_assay_tracker(folder_path, total_wells, values[EXP_RADIO_PIC_KEY])
+        assay_tracker = create_assay_tracker(folder_path, total_wells, values[EXP_RADIO_PIC_KEY], trim_percent)
     
     completed_rounds = 0
     while completed_rounds < round_count and not thread_event.is_set():

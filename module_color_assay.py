@@ -25,6 +25,7 @@ import module_well_location_helper as WL
 RGB_DECIMALS = 3
 TIME_DECIMALS = 3
 DELTA_DECIMALS = 2
+DEFAULT_TRIM_PERCENT = 10
 
 
 def get_unique_id():
@@ -48,6 +49,18 @@ def calculate_color_delta(control_rgb, experimental_rgb):
     r0, g0, b0 = control_rgb
     r1, g1, b1 = experimental_rgb
     return math.sqrt(((r0 - r1) ** 2) + ((g0 - g1) ** 2) + ((b0 - b1) ** 2))
+
+
+def normalize_trim_percent(value, default=DEFAULT_TRIM_PERCENT):
+    if value is None:
+        return int(default)
+
+    try:
+        trim_percent = int(value)
+    except (TypeError, ValueError):
+        return int(default)
+
+    return max(trim_percent, 0)
 
 
 def _require_image_stack():
@@ -102,18 +115,41 @@ def _get_visible_bgr_pixels(image, capture_state=None):
     return cropped_image[..., :3][alpha_mask]
 
 
-def measure_mean_rgb(image_path, capture_state=None):
+def _calculate_trimmed_mean(channel_values, trim_percent):
+    sorted_values = np.sort(np.asarray(channel_values, dtype=np.float64))
+    if sorted_values.size == 0:
+        raise RuntimeError("No visible pixels were available for trimmed-mean measurement.")
+
+    trim_percent = normalize_trim_percent(trim_percent, default=0)
+    if trim_percent <= 0 or sorted_values.size == 1:
+        return float(sorted_values.mean())
+
+    trim_count = int(np.floor(sorted_values.size * (trim_percent / 100.0)))
+    max_trim_count = (sorted_values.size - 1) // 2
+    trim_count = min(trim_count, max_trim_count)
+
+    if trim_count > 0:
+        sorted_values = sorted_values[trim_count:sorted_values.size - trim_count]
+
+    return float(sorted_values.mean())
+
+
+def measure_mean_rgb(image_path, capture_state=None, trim_percent=DEFAULT_TRIM_PERCENT):
     image = _load_image(image_path)
     visible_bgr = _get_visible_bgr_pixels(image, capture_state=capture_state)
-    mean_bgr = visible_bgr.astype(np.float64).mean(axis=0)
-    return (float(mean_bgr[2]), float(mean_bgr[1]), float(mean_bgr[0]))
+    trimmed_bgr = [
+        _calculate_trimmed_mean(visible_bgr[:, channel_index], trim_percent)
+        for channel_index in range(3)
+    ]
+    return (trimmed_bgr[2], trimmed_bgr[1], trimmed_bgr[0])
 
 
 class ColorAssayTracker:
-    def __init__(self, save_folder, total_wells, csv_path=None):
+    def __init__(self, save_folder, total_wells, csv_path=None, trim_percent=DEFAULT_TRIM_PERCENT):
         self.save_folder = save_folder
         self.total_wells = int(total_wells)
         self.baselines = {}
+        self.trim_percent = normalize_trim_percent(trim_percent)
         self.csv_path = csv_path or os.path.join(
             save_folder,
             f"color_assay_{get_unique_id()}.csv",
@@ -145,7 +181,11 @@ class ColorAssayTracker:
 
     def build_well_block(self, well_number, time_min, image_path, capture_state=None, current_round=1):
         try:
-            rgb = measure_mean_rgb(image_path, capture_state=capture_state)
+            rgb = measure_mean_rgb(
+                image_path,
+                capture_state=capture_state,
+                trim_percent=self.trim_percent,
+            )
         except Exception as exc:
             print(f"Color assay measurement failed for well {well_number}: {exc}")
             return self.build_blank_well_block()
