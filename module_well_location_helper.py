@@ -16,13 +16,22 @@ Changelog:
 8-27-2022: Started changelog. Working Cross hair GUI. Create dummy PiCamera class for easier RPi transfer.
 
 """
-import cv2
-import FreeSimpleGUI as sg
 import numpy as np
+try:
+    import FreeSimpleGUI as sg
+except ImportError:
+    sg = None
+try:
+    import cv2
+except ImportError:
+    cv2 = None
 
 from os import remove
 from os.path import join
-from PIL import ImageColor
+try:
+    from PIL import ImageColor
+except ImportError:
+    ImageColor = None
 
 
 # For Testing Code when not connected to a Raspberry Pi Camera and 3D printer
@@ -155,6 +164,53 @@ def draw_cross_hairs(image):
     image_edit = cv2.line(image_edit, start_point, end_point, CIRCLE_COLOR, LINE_THICKNESS)
 
     return image_edit
+
+
+def crop_image_to_crosshair_circle(image, preview_size, radius):
+    """
+    Return a centered BGRA crop whose visible area matches the crosshair circle.
+    """
+    if image is None or image.size == 0:
+        raise ValueError("image is empty")
+    if preview_size is None or len(preview_size) < 2:
+        raise ValueError("preview_size must contain width and height")
+
+    preview_width = max(int(preview_size[0]), 1)
+    preview_height = max(int(preview_size[1]), 1)
+    radius = max(int(radius), 1)
+
+    still_height, still_width = image.shape[:2]
+    scale = min(still_width / float(preview_width), still_height / float(preview_height))
+    scaled_radius = max(int(round(radius * scale)), 1)
+
+    center_x = still_width // 2
+    center_y = still_height // 2
+    max_radius = min(center_x, still_width - center_x, center_y, still_height - center_y)
+    if max_radius < 1:
+        raise ValueError("image is too small for centered circular cropping")
+
+    scaled_radius = min(scaled_radius, max_radius)
+    diameter = scaled_radius * 2
+    left = center_x - scaled_radius
+    top = center_y - scaled_radius
+    crop = image[top:top + diameter, left:left + diameter].copy()
+
+    if crop.ndim == 2:
+        crop_bgra = np.stack((crop, crop, crop, np.zeros_like(crop)), axis=-1)
+    elif crop.shape[2] == 4:
+        crop_bgra = crop.copy()
+    elif crop.shape[2] == 3:
+        alpha_channel = np.zeros((diameter, diameter, 1), dtype=crop.dtype)
+        crop_bgra = np.concatenate((crop.copy(), alpha_channel), axis=2)
+    else:
+        raise ValueError("unsupported image channel layout")
+
+    yy, xx = np.ogrid[:diameter, :diameter]
+    circle_mask = ((xx - scaled_radius) ** 2 + (yy - scaled_radius) ** 2) <= (scaled_radius ** 2)
+    alpha_mask = np.zeros((diameter, diameter), dtype=np.uint8)
+    alpha_mask[circle_mask] = 255
+    crop_bgra[..., 3] = alpha_mask
+    return crop_bgra
 
 
 def create_crosshair_overlay(camera, radius, thickness, color_bgr, alpha, preview_window, camera_lock=None, existing_overlay=None):
