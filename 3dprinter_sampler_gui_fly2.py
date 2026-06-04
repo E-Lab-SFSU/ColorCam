@@ -66,6 +66,7 @@ import get_current_location_m114 as GCL
 import printer_connection as printer
 import prepare_experiment as P
 import module_get_cam_settings as GCS
+import module_color_assay as MCA
 import module_experiment_timer as ET
 import module_well_location_helper as WL
 import module_well_location_calculator as WLC
@@ -229,6 +230,7 @@ CROSSHAIR_CAPTURE_STATE = {
     "enabled": False,
     "radius": WL.CIRCLE_RADIUS,
     "preview_size": (PREVIEW_WIDTH, PREVIEW_HEIGHT),
+    "line_thickness": WL.CIRCLE_THICKNESS,
 }
 
 # Numeric-only inputs to guard
@@ -247,7 +249,7 @@ NUMERIC_KEYS = [
 ]
 
 
-def set_crosshair_capture_state(enabled=None, radius=None, preview_size=None):
+def set_crosshair_capture_state(enabled=None, radius=None, preview_size=None, line_thickness=None):
     with CROSSHAIR_CAPTURE_STATE_LOCK:
         if enabled is not None:
             CROSSHAIR_CAPTURE_STATE["enabled"] = bool(enabled)
@@ -257,6 +259,8 @@ def set_crosshair_capture_state(enabled=None, radius=None, preview_size=None):
             preview_width = max(int(preview_size[0]), 1)
             preview_height = max(int(preview_size[1]), 1)
             CROSSHAIR_CAPTURE_STATE["preview_size"] = (preview_width, preview_height)
+        if line_thickness is not None:
+            CROSSHAIR_CAPTURE_STATE["line_thickness"] = max(int(line_thickness), 1)
 
 
 def refresh_crosshair_capture_state(enabled=None, radius=None):
@@ -264,6 +268,7 @@ def refresh_crosshair_capture_state(enabled=None, radius=None):
         enabled=enabled,
         radius=radius,
         preview_size=(PREVIEW_WIDTH, PREVIEW_HEIGHT),
+        line_thickness=WL.CIRCLE_THICKNESS,
     )
 
 
@@ -273,7 +278,32 @@ def get_crosshair_capture_state():
             "enabled": bool(CROSSHAIR_CAPTURE_STATE["enabled"]),
             "radius": int(CROSSHAIR_CAPTURE_STATE["radius"]),
             "preview_size": tuple(CROSSHAIR_CAPTURE_STATE["preview_size"]),
+            "line_thickness": int(CROSSHAIR_CAPTURE_STATE["line_thickness"]),
         }
+
+
+def create_assay_tracker(folder_path, total_wells, picture_mode):
+    if not folder_path or not picture_mode or total_wells < 1:
+        return None
+    return MCA.ColorAssayTracker(folder_path, total_wells)
+
+
+def append_assay_well_block(assay_tracker, round_row, well_number, time_min, file_full_path, capture_state, current_round, capture_ok):
+    if assay_tracker is None or round_row is None:
+        return
+
+    if capture_ok:
+        well_block = assay_tracker.build_well_block(
+            well_number=well_number,
+            time_min=time_min,
+            image_path=file_full_path,
+            capture_state=capture_state,
+            current_round=current_round,
+        )
+    else:
+        well_block = assay_tracker.build_blank_well_block()
+
+    assay_tracker.append_well_block(round_row, well_number, well_block)
 
 # Small-slice sleep so Stop is responsive
 def sleep_with_stop(total_seconds, stop_event, chunk=0.25):
@@ -405,6 +435,7 @@ def run_experiment(event, values, thread_event, camera, preview_win_id):
     Input: PySimpleGUI window event and values
     """
     # global camera
+    global is_running_experiment
     print("run_experiment")
     
     # Get CSV Filename
@@ -415,11 +446,17 @@ def run_experiment(event, values, thread_event, camera, preview_win_id):
     
     # Get GCODE Location List from path_list
     gcode_string_list = P.convert_list_to_gcode_strings(path_list)
+    total_wells = len(gcode_string_list)
+    if total_wells == 0:
+        print("Selected CSV has no well locations. Stopping experiment.")
+        is_running_experiment = False
+        return
     
     # Go into Absolute Positioning Mode
     printer.run_gcode(C.ABSOLUTE_POS)
     
     folder_path = None
+    assay_tracker = None
     # Create New Folder If not in "Preview" Mode
     if values[EXP_RADIO_PREVIEW_KEY] == False:
         folder_path = P.create_and_get_folder_path()
@@ -427,9 +464,11 @@ def run_experiment(event, values, thread_event, camera, preview_win_id):
         # Initialize unique CSV camera settings file
         GCS.SAVE_CSV_FOLDER = folder_path
         GCS.init_csv_file()
+        assay_tracker = create_assay_tracker(folder_path, total_wells, values[EXP_RADIO_PIC_KEY])
     
     # Create While loop to check if thread_event is not set (closing)
     count_run = 0
+    start_time = time.monotonic()
     while not thread_event.is_set():
         
         # TODO: Put in the rest of the code for Pic, Video, Preview from 3dprinter_start_experiment or prepare_experiment
@@ -437,6 +476,8 @@ def run_experiment(event, values, thread_event, camera, preview_win_id):
         print("Run #", count_run)
         
         well_number = 1
+        time_min = 0 if count_run == 0 else round((time.monotonic() - start_time) / 60.0, 3)
+        assay_row = [] if assay_tracker is not None else None
         sleep_with_stop(10, thread_event)
         
         for location in gcode_string_list:
@@ -460,9 +501,20 @@ def run_experiment(event, values, thread_event, camera, preview_win_id):
                 print("Taking Pictures Only")
                 if folder_path:
                     file_full_path = P.get_file_full_path(folder_path, well_number, total_wells=len(gcode_string_list))
-                    get_well_picture(camera, file_full_path)
+                    capture_state = get_crosshair_capture_state()
+                    capture_ok = get_well_picture(camera, file_full_path, capture_state=capture_state)
                     data_row = GCS.gen_cam_data(file_full_path, camera)
                     GCS.append_to_csv_file(data_row)
+                    append_assay_well_block(
+                        assay_tracker,
+                        assay_row,
+                        well_number,
+                        time_min,
+                        file_full_path,
+                        capture_state,
+                        current_round=count_run + 1,
+                        capture_ok=capture_ok,
+                    )
                 
                 # Return to streaming resolution: 640 x 480 (or it will crash)
                 # Bug: Crashes anyway because of threading
@@ -475,6 +527,9 @@ def run_experiment(event, values, thread_event, camera, preview_win_id):
                 return
             """
             well_number += 1
+
+        if assay_tracker is not None and assay_row is not None and not thread_event.is_set():
+            assay_tracker.write_round_row(assay_row)
         
         count_run += 1
         
@@ -490,7 +545,6 @@ def run_experiment(event, values, thread_event, camera, preview_win_id):
     print("=========================")
     print("Experiment Stopped")
     print("=========================")
-    global is_running_experiment
     is_running_experiment = False
 
 
@@ -505,6 +559,7 @@ def run_experiment2(event, values, thread_event, pause_event, camera, preview_wi
     print("run_experiment with round scheduling")
     
     round_count, interval_seconds = ET.get_round_settings(values)
+    interval_minutes = int(values[ET.ROUND_INTERVAL_MIN_KEY])
     start_time = time.monotonic()
 
     # Get CSV Filename
@@ -525,6 +580,7 @@ def run_experiment2(event, values, thread_event, pause_event, camera, preview_wi
     printer.run_gcode(C.ABSOLUTE_POS)
     
     folder_path = None
+    assay_tracker = None
     # Create New Folder If not in "Preview" Mode
     if values[EXP_RADIO_PREVIEW_KEY] == False:
         dest_folder = PIC_SAVE_FOLDER
@@ -532,6 +588,7 @@ def run_experiment2(event, values, thread_event, pause_event, camera, preview_wi
         print("Not in Preview Mode, creating folder:", folder_path)
         GCS.SAVE_CSV_FOLDER = folder_path
         GCS.init_csv_file()
+        assay_tracker = create_assay_tracker(folder_path, total_wells, values[EXP_RADIO_PIC_KEY])
     
     completed_rounds = 0
     while completed_rounds < round_count and not thread_event.is_set():
@@ -546,6 +603,8 @@ def run_experiment2(event, values, thread_event, pause_event, camera, preview_wi
         print(f"Round {current_round} of {round_count}")
         well_number = 1
         round_complete = True
+        time_min = (current_round - 1) * interval_minutes
+        assay_row = [] if assay_tracker is not None else None
 
         for location in gcode_string_list:
             # Respect pause while iterating wells
@@ -586,14 +645,28 @@ def run_experiment2(event, values, thread_event, pause_event, camera, preview_wi
                     file_full_path = P.get_file_full_path(folder_path, well_number, total_wells=total_wells)
                 
                 if folder_path:
-                    get_well_picture(camera, file_full_path)
+                    capture_state = get_crosshair_capture_state()
+                    capture_ok = get_well_picture(camera, file_full_path, capture_state=capture_state)
                     data_row = GCS.gen_cam_data(file_full_path, camera)
                     GCS.append_to_csv_file(data_row)
+                    append_assay_well_block(
+                        assay_tracker,
+                        assay_row,
+                        well_number,
+                        time_min,
+                        file_full_path,
+                        capture_state,
+                        current_round=current_round,
+                        capture_ok=capture_ok,
+                    )
 
             well_number += 1
 
         if not round_complete or thread_event.is_set():
             break
+
+        if assay_tracker is not None and assay_row is not None:
+            assay_tracker.write_round_row(assay_row)
 
         completed_rounds += 1
         print(f"Completed round {completed_rounds} of {round_count}")
@@ -850,15 +923,16 @@ def write_crosshair_cropped_png(source_path, target_path, capture_state):
         source_image,
         preview_size=capture_state["preview_size"],
         radius=capture_state["radius"],
-        line_thickness=WL.CIRCLE_THICKNESS,
+        line_thickness=capture_state.get("line_thickness", WL.CIRCLE_THICKNESS),
     )
     if not cv2.imwrite(target_path, cropped_image):
         raise RuntimeError(f"Unable to save cropped PNG: {target_path}")
 
 
-def capture_still(camera, file_full_path):
+def capture_still(camera, file_full_path, capture_state=None):
     """Safely capture a still while keeping the live preview running."""
-    capture_state = get_crosshair_capture_state()
+    if capture_state is None:
+        capture_state = get_crosshair_capture_state()
     crop_enabled = bool(capture_state["enabled"])
     capture_path = file_full_path
     temp_capture_path = None
@@ -904,7 +978,7 @@ def get_picture(camera):
     pass
 
 
-def get_well_picture(camera, file_full_path):
+def get_well_picture(camera, file_full_path, capture_state=None):
     # TODO: Change variables here to Global to match changes in Camera Tab
     # Take a Picture, 12MP: 4056x3040
     pic_width = PIC_WIDTH
@@ -912,9 +986,10 @@ def get_well_picture(camera, file_full_path):
     # unique_id = get_unique_id()
     # pic_save_name = f"well{well_number}_{unique_id}_{pic_width}x{pic_height}.jpg"
     
-    if capture_still(camera, file_full_path):
+    if capture_still(camera, file_full_path, capture_state=capture_state):
         print(f"Saved Image: {file_full_path}")
-    pass
+        return True
+    return False
 
 
 
