@@ -310,7 +310,7 @@ class LibcameraBackend(BaseCameraBackend):
             return Transform(hflip=1, vflip=1)
         return Transform()
 
-    def _reconfigure(self, config):
+    def _reconfigure(self, config, reapply_overlay: bool = True):
         was_running = self._started
         if was_running:
             self.picam2.stop()
@@ -319,11 +319,15 @@ class LibcameraBackend(BaseCameraBackend):
         if was_running:
             self.picam2.start()
             self._started = True
-            if self._overlay_array is not None:
+            if reapply_overlay and self._overlay_array is not None:
                 self._apply_preview_overlay(self._overlay_array)
 
     def _configure_preview(self, res: Tuple[int, int], rotation: int):
-        kwargs = {"main": {"size": tuple(res)}}
+        kwargs = {
+            "main": {"size": tuple(res)},
+            # Picamera2 preview overlays require at least two buffers.
+            "buffer_count": 2,
+        }
         transform = self._transform_for_rotation(rotation)
         if transform is not None:
             kwargs["transform"] = transform
@@ -366,8 +370,13 @@ class LibcameraBackend(BaseCameraBackend):
         if res:
             target_res = tuple(res)
             # Temporary still configuration, then restore preview config.
-            still_config = self.picam2.create_still_configuration(main={"size": target_res})
-            self._reconfigure(still_config)
+            still_config = self.picam2.create_still_configuration(
+                main={"size": target_res},
+                buffer_count=2,
+            )
+            # Skip preview overlay reapply during the temporary still mode to
+            # avoid libcamera overlay buffer-count errors mid-capture.
+            self._reconfigure(still_config, reapply_overlay=False)
             self.picam2.capture_file(path)
             self._configure_preview(self._resolution, self._rotation)
             return

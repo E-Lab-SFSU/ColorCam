@@ -407,11 +407,6 @@ def run_experiment(event, values, thread_event, camera, preview_win_id):
     # global camera
     print("run_experiment")
     
-    if camera.preview:
-        camera.stop_preview()
-        
-    
-    
     # Get CSV Filename
     csv_filename = values[OPEN_CSV_FILEBROWSE_KEY]
     
@@ -508,9 +503,6 @@ def run_experiment2(event, values, thread_event, pause_event, camera, preview_wi
     # global camera
     global is_running_experiment
     print("run_experiment with round scheduling")
-    
-    if camera.preview:
-        camera.stop_preview()
     
     round_count, interval_seconds = ET.get_round_settings(values)
     start_time = time.monotonic()
@@ -651,9 +643,6 @@ def run_experiment_gui(main_values, camera):
     
     # Get paths from CSV file
     print("run_experiment")
-    
-    camera.stop_preview()
-    
     
     # Get CSV Filename
     csv_filename = main_values[OPEN_CSV_FILEBROWSE_KEY]
