@@ -38,7 +38,7 @@ CAMERA_DEVICE_INDEX = 0
 FOLDERNAME_PREFIX = "Code"
 FILENAME_PREFIX = "well"
 FILENAME_VIDEO_EXTENSION = ".h264"
-FILENAME_PICTURE_EXTENSION = ".jpg"
+FILENAME_PICTURE_EXTENSION = ".png"
 
 # Default save path rooted at the current user's home directory.
 FOLDERPATH = os.path.join(os.path.expanduser("~"), "")

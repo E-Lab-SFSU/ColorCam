@@ -55,6 +55,7 @@ import FreeSimpleGUI as sg
 import cv2
 import numpy as np
 import os
+import tempfile
 import time
 import threading
 import random
@@ -223,6 +224,12 @@ CAMERA_CONTROL_NOTE_KEY = "-CAMERA CONTROL NOTE-"
 is_running_experiment = False
 # Camera access lock to avoid preview/still races
 CAMERA_LOCK = threading.Lock()
+CROSSHAIR_CAPTURE_STATE_LOCK = threading.Lock()
+CROSSHAIR_CAPTURE_STATE = {
+    "enabled": False,
+    "radius": WL.CIRCLE_RADIUS,
+    "preview_size": (PREVIEW_WIDTH, PREVIEW_HEIGHT),
+}
 
 # Numeric-only inputs to guard
 NUMERIC_KEYS = [
@@ -238,6 +245,35 @@ NUMERIC_KEYS = [
     "-MANUAL SHUTTER MS-",
     *ET.ROUND_INPUT_KEY_LIST,
 ]
+
+
+def set_crosshair_capture_state(enabled=None, radius=None, preview_size=None):
+    with CROSSHAIR_CAPTURE_STATE_LOCK:
+        if enabled is not None:
+            CROSSHAIR_CAPTURE_STATE["enabled"] = bool(enabled)
+        if radius is not None:
+            CROSSHAIR_CAPTURE_STATE["radius"] = max(int(radius), 1)
+        if preview_size is not None:
+            preview_width = max(int(preview_size[0]), 1)
+            preview_height = max(int(preview_size[1]), 1)
+            CROSSHAIR_CAPTURE_STATE["preview_size"] = (preview_width, preview_height)
+
+
+def refresh_crosshair_capture_state(enabled=None, radius=None):
+    set_crosshair_capture_state(
+        enabled=enabled,
+        radius=radius,
+        preview_size=(PREVIEW_WIDTH, PREVIEW_HEIGHT),
+    )
+
+
+def get_crosshair_capture_state():
+    with CROSSHAIR_CAPTURE_STATE_LOCK:
+        return {
+            "enabled": bool(CROSSHAIR_CAPTURE_STATE["enabled"]),
+            "radius": int(CROSSHAIR_CAPTURE_STATE["radius"]),
+            "preview_size": tuple(CROSSHAIR_CAPTURE_STATE["preview_size"]),
+        }
 
 # Small-slice sleep so Stop is responsive
 def sleep_with_stop(total_seconds, stop_event, chunk=0.25):
@@ -816,36 +852,70 @@ def get_video(camera):
     print(f"Recorded Video: {filename}")
 
 
+def write_crosshair_cropped_png(source_path, target_path, capture_state):
+    source_image = cv2.imread(source_path, cv2.IMREAD_COLOR)
+    if source_image is None:
+        raise RuntimeError(f"Unable to read captured image for cropping: {source_path}")
+
+    cropped_image = WL.crop_image_to_crosshair_circle(
+        source_image,
+        preview_size=capture_state["preview_size"],
+        radius=capture_state["radius"],
+    )
+    if not cv2.imwrite(target_path, cropped_image):
+        raise RuntimeError(f"Unable to save cropped PNG: {target_path}")
+
+
 def capture_still(camera, file_full_path):
     """Safely capture a still by pausing preview and restoring resolution."""
     backend_name = str(getattr(camera, "backend_name", ""))
     is_usb_backend = ("USBCameraBackend" in backend_name)
+    capture_state = get_crosshair_capture_state()
+    crop_enabled = bool(capture_state["enabled"])
+    capture_path = file_full_path
+    temp_capture_path = None
 
-    with CAMERA_LOCK:
-        was_previewing = bool(camera.preview)
-        if was_previewing and not is_usb_backend:
-            camera.stop_preview()
-        original_res = camera.resolution
-        success = False
-        try:
-            if is_usb_backend:
-                # USB cameras often behave better when capture uses current stream settings.
-                camera.capture(file_full_path)
-            else:
-                camera.resolution = (PIC_WIDTH, PIC_HEIGHT)
-                camera.capture(file_full_path)
-            success = True
-        except Exception as exc:
-            print(f"Still capture failed: {exc}")
-        finally:
-            try:
-                camera.resolution = original_res
-            except Exception:
-                pass
+    if crop_enabled:
+        temp_fd, temp_capture_path = tempfile.mkstemp(prefix="colorcam_capture_", suffix=C.FILENAME_PICTURE_EXTENSION)
+        os.close(temp_fd)
+        capture_path = temp_capture_path
+
+    success = False
+    try:
+        with CAMERA_LOCK:
+            was_previewing = bool(camera.preview)
             if was_previewing and not is_usb_backend:
-                preview_window = (PREVIEW_LOC_X, PREVIEW_LOC_Y, PREVIEW_WIDTH, PREVIEW_HEIGHT)
-                camera.start_preview(alpha=PREVIEW_ALPHA, fullscreen=False, window=preview_window)
-        return success
+                camera.stop_preview()
+            original_res = camera.resolution
+            try:
+                if is_usb_backend:
+                    # USB cameras often behave better when capture uses current stream settings.
+                    camera.capture(capture_path)
+                else:
+                    camera.resolution = (PIC_WIDTH, PIC_HEIGHT)
+                    camera.capture(capture_path)
+                success = True
+            finally:
+                try:
+                    camera.resolution = original_res
+                except Exception:
+                    pass
+                if was_previewing and not is_usb_backend:
+                    preview_window = (PREVIEW_LOC_X, PREVIEW_LOC_Y, PREVIEW_WIDTH, PREVIEW_HEIGHT)
+                    camera.start_preview(alpha=PREVIEW_ALPHA, fullscreen=False, window=preview_window)
+
+        if success and crop_enabled and temp_capture_path is not None:
+            write_crosshair_cropped_png(temp_capture_path, file_full_path, capture_state)
+    except Exception as exc:
+        print(f"Still capture failed: {exc}")
+        success = False
+    finally:
+        if temp_capture_path and os.path.exists(temp_capture_path):
+            try:
+                os.remove(temp_capture_path)
+            except OSError:
+                pass
+    return success
 
 
 def get_picture(camera):
@@ -854,7 +924,7 @@ def get_picture(camera):
     pic_width = PIC_WIDTH
     pic_height = PIC_HEIGHT
     unique_id = get_unique_id()
-    pic_save_name = f"test_{unique_id}_{pic_width}x{pic_height}.jpg"
+    pic_save_name = f"test_{unique_id}_{pic_width}x{pic_height}{C.FILENAME_PICTURE_EXTENSION}"
     
     pic_save_full_path = f"{PIC_SAVE_FOLDER}/{pic_save_name}"
     
@@ -885,7 +955,7 @@ def get_x_pictures(x, delay_seconds, camera):
         # Create Unique ID
         unique_id = get_unique_id()
         # Create Save Name from Unique ID
-        pic_save_name = f"test_{unique_id}_{PIC_WIDTH}x{PIC_HEIGHT}.jpg"
+        pic_save_name = f"test_{unique_id}_{PIC_WIDTH}x{PIC_HEIGHT}{C.FILENAME_PICTURE_EXTENSION}"
         # Create Full Save Path using Save Name and Save Folder
         pic_save_full_path = f"{PIC_SAVE_FOLDER}/{pic_save_name}"
         # Capture Image
@@ -972,17 +1042,10 @@ def create_z_stack(z_start, z_end, z_increment, save_folder_location, camera):
 
 
         # Take Picture and save to folder location
-        save_file_name = f"_image_{z_rounded_str}_.jpg"
+        save_file_name = f"_image_{z_rounded_str}_{C.FILENAME_PICTURE_EXTENSION}"
         save_full_path = f"{save_folder_path}/{save_file_name}"
-        
-        # Change to max resolution
-        camera.resolution = PIC_RES
-        
-        
-        camera.capture(save_full_path)
-        
-        # Change back to streaming resolution
-        camera.resolution = VID_RES
+        if capture_still(camera, save_full_path):
+            print(f"Saved Image: {save_full_path}")
 
     
     print(f"Done Creating Z Stack at {save_folder_path}")
@@ -1915,6 +1978,10 @@ def main():
     # Create window and show it without plot
     window = sg.Window("3D Printer GUI Test", layout, location=(640, 36), finalize=True)
     initialize_camera_control_panel(window, camera, supports_manual_camera_controls)
+    refresh_crosshair_capture_state(
+        enabled=supports_crosshair_overlay,
+        radius=WL.CIRCLE_RADIUS,
+    )
     
     
     # Create experiment_run_counter
@@ -1952,6 +2019,19 @@ def main():
             
             # Start Camera Too PREVIEW_LOC_X, PREVIEW_LOC_Y, PREVIEW_WIDTH, PREVIEW_HEIGHT, PREVIEW_ALPHA
             camera.start_preview(alpha=PREVIEW_ALPHA, fullscreen=False, window=(PREVIEW_LOC_X, y_new + PREVIEW_WINDOW_OFFSET, PREVIEW_WIDTH, PREVIEW_HEIGHT))
+            refresh_crosshair_capture_state()
+            if supports_crosshair_overlay and values.get("--XHAIR_ON--", True):
+                preview_rect = (PREVIEW_LOC_X, y_new + PREVIEW_WINDOW_OFFSET, PREVIEW_WIDTH, PREVIEW_HEIGHT)
+                crosshair_overlay = WL.create_crosshair_overlay(
+                    camera,
+                    radius=WL.CIRCLE_RADIUS,
+                    thickness=WL.CIRCLE_THICKNESS,
+                    color_bgr=WL.CIRCLE_COLOR,
+                    alpha=PREVIEW_ALPHA,
+                    preview_window=preview_rect,
+                    camera_lock=CAMERA_LOCK,
+                    existing_overlay=crosshair_overlay
+                )
             
             # Change is_initial_startup to False
             is_initial_startup = False
@@ -2275,8 +2355,25 @@ def main():
                 PREVIEW_WIDTH = prev_width
                 PREVIEW_HEIGHT = prev_height
                 PREVIEW_ALPHA = alpha_val
+                refresh_crosshair_capture_state()
                 move_window_pid(preview_win_id, prev_loc_x, prev_loc_y - PREVIEW_WINDOW_OFFSET)
                 camera.start_preview(alpha=alpha_val, fullscreen=False, window=(prev_loc_x, prev_loc_y, prev_width, prev_height))
+                if supports_crosshair_overlay and values.get("--XHAIR_ON--", True):
+                    preview_rect = (prev_loc_x, prev_loc_y, prev_width, prev_height)
+                    crosshair_overlay = WL.create_crosshair_overlay(
+                        camera,
+                        radius=WL.CIRCLE_RADIUS,
+                        thickness=WL.CIRCLE_THICKNESS,
+                        color_bgr=WL.CIRCLE_COLOR,
+                        alpha=PREVIEW_ALPHA,
+                        preview_window=preview_rect,
+                        camera_lock=CAMERA_LOCK,
+                        existing_overlay=crosshair_overlay
+                    )
+                elif crosshair_overlay:
+                    with CAMERA_LOCK:
+                        camera.remove_overlay(crosshair_overlay)
+                    crosshair_overlay = None
                 x_win, y_win = get_window_location_from_pid(preview_win_id)
                 print(f"x_win:{x_win}, y_win:{y_win}")
         elif event == STOP_PREVIEW:
@@ -2300,6 +2397,10 @@ def main():
             elif event == "--XHAIR_DEC--":
                 current_rad = max(1, current_rad - 1)
             WL.CIRCLE_RADIUS = current_rad
+            refresh_crosshair_capture_state(
+                enabled=values.get("--XHAIR_ON--", True),
+                radius=current_rad,
+            )
             window["--XHAIR_RADIUS--"].update(str(current_rad))
             values["--XHAIR_RADIUS--"] = str(current_rad)
             if supports_crosshair_overlay and values.get("--XHAIR_ON--", True):
@@ -2327,12 +2428,14 @@ def main():
         elif event == "--XHAIR_ON--":
             if not supports_crosshair_overlay:
                 window["--XHAIR_ON--"].update(value=False)
+                refresh_crosshair_capture_state(enabled=False, radius=WL.CIRCLE_RADIUS)
                 crosshair_overlay = None
             elif values.get("--XHAIR_ON--", True):
                 try:
                     current_rad = int(values.get("--XHAIR_RADIUS--", WL.CIRCLE_RADIUS))
                 except (TypeError, ValueError):
                     current_rad = WL.CIRCLE_RADIUS
+                refresh_crosshair_capture_state(enabled=True, radius=current_rad)
                 x_win_preview, y_win_preview = get_window_location_from_pid(preview_win_id)
                 preview_rect = (x_win_preview, y_win_preview + PREVIEW_WINDOW_OFFSET, PREVIEW_WIDTH, PREVIEW_HEIGHT)
                 crosshair_overlay = WL.create_crosshair_overlay(
@@ -2346,6 +2449,7 @@ def main():
                     existing_overlay=crosshair_overlay
                 )
             else:
+                refresh_crosshair_capture_state(enabled=False, radius=WL.CIRCLE_RADIUS)
                 if crosshair_overlay:
                     with CAMERA_LOCK:
                         camera.remove_overlay(crosshair_overlay)

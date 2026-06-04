@@ -158,7 +158,7 @@ def get_file_full_path(folder_path, well_number, total_wells=None):
     else:
         width = max(3, len(str(total_wells)))
     well_str = str(well_number).zfill(width)
-    file_name_full = f"well_{well_str}_{file_name_suffix}_.jpg"
+    file_name_full = f"well_{well_str}_{file_name_suffix}_{C.FILENAME_PICTURE_EXTENSION}"
     file_full_path = "{}/{}".format(folder_path, file_name_full)
     # print(file_full_path)
     return file_full_path
