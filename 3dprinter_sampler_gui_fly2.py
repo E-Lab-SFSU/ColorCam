@@ -1561,11 +1561,26 @@ def normalized_camera_backend_name(camera):
 
 
 def is_libcamera_camera(camera):
-    return normalized_camera_backend_name(camera) in ("libcamera", "picamera2", "libcam")
+    backend = normalized_camera_backend_name(camera)
+    return (
+        backend in ("libcamera", "picamera2", "libcam", "libcamerabackend")
+        or "libcamera" in backend
+        or backend.startswith("picamera2")
+    )
+
+
+def is_picamera_legacy_camera(camera):
+    backend = normalized_camera_backend_name(camera)
+    if is_libcamera_camera(camera):
+        return False
+    return (
+        backend in ("picamera", "picam", "picamerabackend")
+        or ("picamera" in backend and "picamera2" not in backend)
+    )
 
 
 def camera_supports_manual_iso_controls(camera):
-    return is_libcamera_camera(camera)
+    return is_libcamera_camera(camera) or is_picamera_legacy_camera(camera)
 
 
 def get_camera_settle_time_seconds(values):
