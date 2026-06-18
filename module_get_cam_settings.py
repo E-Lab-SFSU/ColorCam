@@ -49,6 +49,14 @@ SAVE_CSV_FILE = ''
 SAVE_IMAGE_FOLDER = r'/home/pi/Projects/3dprinter_sampling/Test Pictures/7-21-2022'
 
 
+def _normalized_backend_name(camera):
+    return str(getattr(camera, "backend_name", "")).strip().lower().replace(" ", "").replace("_", "").replace("-", "")
+
+
+def _is_libcamera_camera(camera):
+    return _normalized_backend_name(camera) in ("libcamera", "picamera2", "libcam")
+
+
 def wait_for_digital_gain_settle(camera, label="digital_gain", max_wait_seconds=6.0, poll_seconds=0.5, epsilon=0.02):
     prev_value = None
     start_time = time.monotonic()
@@ -84,22 +92,24 @@ def gen_cam_data(image_file_name, camera):
     # shutter_speed = random.uniform(10.0, 35.0)
     
     # Real Version:
-    # ISO version
-    iso_value = camera.iso
-    
     # Get Analog and Digital Gains
     #analog_gain = camera.analog_gain # Gets Fraction DataType
     #digital_gain = camera.digital_gain # Gets Fraction DataType
     
-    analog_gain = camera.analog_gain.__float__() # Gets Fraction DataType, convert to float
-    digital_gain = camera.digital_gain.__float__() # Gets Fraction DataType, convert to float
+    analog_gain = float(camera.analog_gain)
+    digital_gain = float(camera.digital_gain)
+
+    if _is_libcamera_camera(camera):
+        iso_value = max(1, int(round(analog_gain * 100.0)))
+    else:
+        iso_value = int(round(float(camera.iso)))
     
     # Get AWB Gains, red and blue
     red_gain, blue_gain = camera.awb_gains   # Gets a tuple (red, blue)
     
     # Convert Fraction to float
-    red_gain = red_gain.__float__()
-    blue_gain = blue_gain.__float__()
+    red_gain = float(red_gain)
+    blue_gain = float(blue_gain)
     
     # Get Shutterspeed
     # If shutter_speed is set to 0 (auto), then exposure_speed will return actual shutterspeed

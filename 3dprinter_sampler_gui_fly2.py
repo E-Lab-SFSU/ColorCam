@@ -211,6 +211,7 @@ DEFAULT_SCREEN_INDEX = 0
 EXPOSURE_MODE_GROUP = "RADIO_EXPOSURE_MODE"
 EXPOSURE_AUTO_KEY = "-EXPOSURE AUTO-"
 EXPOSURE_MANUAL_KEY = "-EXPOSURE MANUAL-"
+MANUAL_ISO_KEY = "-MANUAL ISO-"
 MANUAL_SHUTTER_MS_KEY = "-MANUAL SHUTTER MS-"
 EXPOSURE_STATUS_KEY = "-EXPOSURE STATUS-"
 EXPO_SETTLE_TIME = 2 # in seconds
@@ -244,6 +245,7 @@ NUMERIC_KEYS = [
     "-PREVIEW HEIGHT KEY-",
     "-ALPHA KEY-",
     "-EXPO SETTLE TIME-",
+    "-MANUAL ISO-",
     "-MANUAL SHUTTER MS-",
     *ET.ROUND_INPUT_KEY_LIST,
 ]
@@ -1452,12 +1454,19 @@ def setup_picture_camera_settings(camera):
     # width = 640
     # height = 480
     camera.resolution = VID_RES
-    
+
+    if is_libcamera_camera(camera):
+        camera.awb_mode = "auto"
+        time.sleep(2)
+        print("libcamera backend detected. Leaving ISO/gain, exposure, and white balance in auto.")
+        print("Done setting picture camera settings")
+        return
+
     # ISO: Image Brightness
     # 100-200 (daytime), 400-800 (low light)
     iso_number = 100
     camera.iso = iso_number
-    
+
     time.sleep(10)
     
     # Contrast
@@ -1501,12 +1510,19 @@ def setup_default_camera_settings(camera):
     width = 640
     height = 480
     camera.resolution = (width, height)
-    
+
+    if is_libcamera_camera(camera):
+        camera.awb_mode = "auto"
+        time.sleep(2)
+        print("libcamera backend detected. Leaving ISO/gain, exposure, and white balance in auto.")
+        print("Done setting default camera settings")
+        return
+
     # ISO: Image Brightness
     # 100-200 (daytime), 400-800 (low light)
     iso_number = 100
     camera.iso = iso_number
-    
+
     time.sleep(10)
     
     # Contrast
@@ -1540,6 +1556,18 @@ def camera_backend_supports_manual_controls(camera):
     return "usb" not in backend_name
 
 
+def normalized_camera_backend_name(camera):
+    return str(getattr(camera, "backend_name", "")).strip().lower().replace(" ", "").replace("_", "").replace("-", "")
+
+
+def is_libcamera_camera(camera):
+    return normalized_camera_backend_name(camera) in ("libcamera", "picamera2", "libcam")
+
+
+def camera_supports_manual_iso_controls(camera):
+    return is_libcamera_camera(camera)
+
+
 def get_camera_settle_time_seconds(values):
     settle_value = str(values.get(EXPO_SETTLE_TIME_KEY, EXPO_SETTLE_TIME)).strip()
     if len(settle_value) == 0:
@@ -1567,6 +1595,49 @@ def get_current_shutter_ms(camera):
     if exposure_speed_us <= 0:
         return None
     return max(1, int(round(exposure_speed_us / 1000.0)))
+
+
+def get_current_iso(camera):
+    try:
+        analog_gain = float(getattr(camera, "analog_gain", 0) or 0)
+    except Exception:
+        analog_gain = 0.0
+
+    if analog_gain > 0:
+        return max(1, int(round(analog_gain * 100.0)))
+
+    try:
+        iso_value = int(round(float(getattr(camera, "iso", 0) or 0)))
+    except Exception:
+        iso_value = 0
+    return iso_value if iso_value > 0 else None
+
+
+def parse_positive_int(raw_value):
+    text_value = str(raw_value).strip()
+    if len(text_value) == 0:
+        return None
+    try:
+        parsed_value = int(text_value)
+    except (TypeError, ValueError):
+        return None
+    if parsed_value <= 0:
+        return None
+    return parsed_value
+
+
+def seed_manual_exposure_fields(window, camera, supports_manual_iso_controls):
+    iso_value = None
+    shutter_ms = get_current_shutter_ms(camera)
+    if shutter_ms is not None:
+        window[MANUAL_SHUTTER_MS_KEY].update(str(shutter_ms))
+
+    if supports_manual_iso_controls:
+        iso_value = get_current_iso(camera)
+        if iso_value is not None:
+            window[MANUAL_ISO_KEY].update(str(iso_value))
+
+    return iso_value, shutter_ms
 
 
 def normalize_awb_gains(gains):
@@ -1611,40 +1682,67 @@ def update_locked_wb_text(window, gains):
     window[WB_BLUE_GAIN_STATUS_KEY].update(f"Locked Blue Gain: {blue_gain:.3f}")
 
 
-def update_camera_control_enabled_state(window, supports_manual_camera_controls, manual_selected):
+def lock_white_balance_from_current_gains(window, camera):
+    gains = normalize_awb_gains(camera.awb_gains)
+    if gains is None:
+        print("Unable to read auto white-balance gains.")
+        return None
+
+    camera.awb_mode = "off"
+    camera.awb_gains = gains
+    update_locked_wb_text(window, gains)
+    print(f"Locked white balance gains: red={gains[0]:.3f}, blue={gains[1]:.3f}")
+    return gains
+
+
+def apply_manual_exposure_values(window, camera, iso_value, shutter_ms, supports_manual_iso_controls):
+    if supports_manual_iso_controls and iso_value is not None:
+        camera.iso = iso_value
+    camera.shutter_speed = shutter_ms * 1000
+    camera.exposure_mode = "off"
+    update_exposure_status_text(window, camera)
+
+
+def update_camera_control_enabled_state(window, supports_manual_camera_controls, manual_selected, supports_manual_iso_controls):
     controls_disabled = not supports_manual_camera_controls
     window[EXPOSURE_AUTO_KEY].update(disabled=controls_disabled)
     window[EXPOSURE_MANUAL_KEY].update(disabled=controls_disabled)
+    window[MANUAL_ISO_KEY].update(disabled=(controls_disabled or not manual_selected or not supports_manual_iso_controls))
     window[MANUAL_SHUTTER_MS_KEY].update(disabled=(controls_disabled or not manual_selected))
-    window[APPLY_EXPOSURE_BUTTON].update(disabled=controls_disabled)
+    if not supports_manual_iso_controls:
+        window[APPLY_EXPOSURE_BUTTON].update(disabled=controls_disabled)
     window[USE_AUTO_WB_BUTTON].update(disabled=controls_disabled)
     window[AUTO_WB_LOCK_BUTTON].update(disabled=controls_disabled)
 
 
-def initialize_camera_control_panel(window, camera, supports_manual_camera_controls):
+def initialize_camera_control_panel(window, camera, supports_manual_camera_controls, supports_manual_iso_controls):
     backend_name = getattr(camera, "backend_name", "unknown")
 
     if supports_manual_camera_controls:
         is_manual = str(getattr(camera, "exposure_mode", "auto")).lower() == "off"
         if is_manual:
-            shutter_ms = get_current_shutter_ms(camera)
-            if shutter_ms is not None:
-                window[MANUAL_SHUTTER_MS_KEY].update(str(shutter_ms))
+            seed_manual_exposure_fields(window, camera, supports_manual_iso_controls)
 
         window[EXPOSURE_AUTO_KEY].update(value=(not is_manual))
         window[EXPOSURE_MANUAL_KEY].update(value=is_manual)
-        window[CAMERA_CONTROL_NOTE_KEY].update(
-            f"Backend: {backend_name}. Use Auto WB on a white card, then click Auto WB + Lock."
-        )
-        update_camera_control_enabled_state(window, True, is_manual)
+        if supports_manual_iso_controls:
+            note_text = (
+                f"Backend: {backend_name}. Auto manages shutter, gain, and white balance. "
+                "Manual mode locks current WB and auto-applies ISO + shutter edits."
+            )
+        else:
+            note_text = f"Backend: {backend_name}. Use Auto WB on a white card, then click Auto WB + Lock."
+        window[CAMERA_CONTROL_NOTE_KEY].update(note_text)
+        update_camera_control_enabled_state(window, True, is_manual, supports_manual_iso_controls)
         update_exposure_status_text(window, camera)
         update_locked_wb_text(window, None)
         return
 
     window[EXPOSURE_AUTO_KEY].update(value=True)
     window[EXPOSURE_MANUAL_KEY].update(value=False)
+    window[MANUAL_ISO_KEY].update("")
     window[MANUAL_SHUTTER_MS_KEY].update("")
-    update_camera_control_enabled_state(window, False, False)
+    update_camera_control_enabled_state(window, False, False, supports_manual_iso_controls)
     window[CAMERA_CONTROL_NOTE_KEY].update(
         f"Backend: {backend_name}. Exposure and white balance controls are not supported on this backend."
     )
@@ -1652,36 +1750,75 @@ def initialize_camera_control_panel(window, camera, supports_manual_camera_contr
     update_locked_wb_text(window, None)
 
 
-def apply_exposure_settings(values, window, camera, supports_manual_camera_controls):
+def enter_libcamera_manual_exposure_mode(values, window, camera):
+    settle_time = get_camera_settle_time_seconds(values)
+    camera.exposure_mode = "auto"
+    camera.awb_mode = "auto"
+    print(
+        f"Manual exposure selected. Settling for {settle_time} seconds before locking current ISO, shutter, and white balance."
+    )
+    if settle_time > 0:
+        time.sleep(settle_time)
+
+    iso_value, shutter_ms = seed_manual_exposure_fields(window, camera, True)
+    if iso_value is None or shutter_ms is None:
+        print("Unable to seed manual ISO/shutter from the current camera state.")
+        return False
+
+    lock_white_balance_from_current_gains(window, camera)
+    apply_manual_exposure_values(window, camera, iso_value, shutter_ms, True)
+    print(f"Manual exposure locked at ISO {iso_value}, shutter {shutter_ms} ms.")
+    return True
+
+
+def apply_exposure_settings(values, window, camera, supports_manual_camera_controls, supports_manual_iso_controls, auto_apply=False):
     if not supports_manual_camera_controls:
         print("Exposure controls are not supported on this camera backend.")
-        return
+        return False
 
     settle_time = get_camera_settle_time_seconds(values)
     manual_selected = bool(values.get(EXPOSURE_MANUAL_KEY, False))
 
     if not manual_selected:
-        camera.shutter_speed = 0
+        if not supports_manual_iso_controls:
+            camera.shutter_speed = 0
         camera.exposure_mode = "auto"
+        if supports_manual_iso_controls:
+            camera.awb_mode = "auto"
+            update_locked_wb_text(window, None)
         print(f"Auto exposure enabled. Settling for {settle_time} seconds.")
         if settle_time > 0:
             time.sleep(settle_time)
         update_exposure_status_text(window, camera)
-        return
+        return True
+
+    if supports_manual_iso_controls:
+        iso_value = parse_positive_int(values.get(MANUAL_ISO_KEY, ""))
+        shutter_ms = parse_positive_int(values.get(MANUAL_SHUTTER_MS_KEY, ""))
+        if iso_value is None or shutter_ms is None:
+            if auto_apply:
+                print("Manual ISO and shutter must both be positive integers before applying.")
+            else:
+                print("Manual ISO and shutter must both be greater than 0.")
+            return False
+
+        apply_manual_exposure_values(window, camera, iso_value, shutter_ms, True)
+        print(f"Manual exposure updated: ISO {iso_value}, shutter {shutter_ms} ms.")
+        return True
 
     shutter_value = str(values.get(MANUAL_SHUTTER_MS_KEY, "")).strip()
     if len(shutter_value) == 0:
         shutter_ms = get_current_shutter_ms(camera)
         if shutter_ms is None:
             print("Unable to seed manual shutter from the current exposure.")
-            return
+            return False
         window[MANUAL_SHUTTER_MS_KEY].update(str(shutter_ms))
         print(f"Manual shutter was blank. Seeded to {shutter_ms} ms from the current exposure.")
     else:
         shutter_ms = int(shutter_value)
         if shutter_ms <= 0:
             print("Manual shutter must be greater than 0 ms.")
-            return
+            return False
 
     camera.shutter_speed = shutter_ms * 1000
     camera.exposure_mode = "off"
@@ -1689,14 +1826,16 @@ def apply_exposure_settings(values, window, camera, supports_manual_camera_contr
     if settle_time > 0:
         time.sleep(settle_time)
     update_exposure_status_text(window, camera)
+    return True
 
 
-def enable_auto_white_balance(camera, supports_manual_camera_controls):
+def enable_auto_white_balance(window, camera, supports_manual_camera_controls):
     if not supports_manual_camera_controls:
         print("White-balance controls are not supported on this camera backend.")
         return
 
     camera.awb_mode = "auto"
+    update_locked_wb_text(window, None)
     print("Auto white balance enabled.")
 
 
@@ -1711,15 +1850,7 @@ def lock_auto_white_balance(values, window, camera, supports_manual_camera_contr
     if settle_time > 0:
         time.sleep(settle_time)
 
-    gains = normalize_awb_gains(camera.awb_gains)
-    if gains is None:
-        print("Unable to read auto white-balance gains.")
-        return
-
-    camera.awb_mode = "off"
-    camera.awb_gains = gains
-    update_locked_wb_text(window, gains)
-    print(f"Locked white balance gains: red={gains[0]:.3f}, blue={gains[1]:.3f}")
+    lock_white_balance_from_current_gains(window, camera)
 # === End Camera Settings Functions ===
 
 
@@ -1799,6 +1930,7 @@ def main():
     if not supports_crosshair_overlay:
         print("Crosshair overlay is not supported by this camera backend.")
     supports_manual_camera_controls = camera_backend_supports_manual_controls(camera)
+    supports_manual_iso_controls = supports_manual_camera_controls and camera_supports_manual_iso_controls(camera)
     if not supports_manual_camera_controls:
         print("Exposure and white-balance controls are not supported by this camera backend.")
     # MHT: 270
@@ -1870,6 +2002,15 @@ def main():
     # ===  
     
     sg.theme("LightGreen")
+
+    manual_exposure_row = [
+        sg.Text("Manual ISO:"),
+        sg.InputText("", size=(6, 1), enable_events=True, key=MANUAL_ISO_KEY, disabled=True),
+        sg.Text("Manual Shutter (ms):"),
+        sg.InputText("", size=(8, 1), enable_events=True, key=MANUAL_SHUTTER_MS_KEY, disabled=True),
+    ]
+    if not supports_manual_iso_controls:
+        manual_exposure_row.append(sg.Button(APPLY_EXPOSURE_BUTTON, disabled=(not supports_manual_camera_controls)))
 
     # Create tabs layout:
     # Tab 1: Start Experiment (Pic, vid, or Preview), Open CSV File. Disable Start Experiment if no CSV loaded
@@ -1946,8 +2087,7 @@ def main():
         [sg.Frame("Exposure", [
             [sg.Radio("Auto Exposure", EXPOSURE_MODE_GROUP, default=True, key=EXPOSURE_AUTO_KEY, enable_events=True, disabled=(not supports_manual_camera_controls)),
              sg.Radio("Manual Exposure", EXPOSURE_MODE_GROUP, default=False, key=EXPOSURE_MANUAL_KEY, enable_events=True, disabled=(not supports_manual_camera_controls))],
-            [sg.Text("Manual Shutter (ms):"), sg.InputText("", size=(8, 1), enable_events=True, key=MANUAL_SHUTTER_MS_KEY, disabled=True),
-             sg.Button(APPLY_EXPOSURE_BUTTON, disabled=(not supports_manual_camera_controls))],
+            manual_exposure_row,
             [sg.Text("Current shutter: unavailable", key=EXPOSURE_STATUS_KEY, size=(35, 1))]
         ])],
         [sg.Frame("White Balance", [
@@ -1956,7 +2096,7 @@ def main():
             [sg.Text("Locked Red Gain: --", key=WB_RED_GAIN_STATUS_KEY, size=(25, 1))],
             [sg.Text("Locked Blue Gain: --", key=WB_BLUE_GAIN_STATUS_KEY, size=(25, 1))]
         ])],
-        [sg.Text("", key=CAMERA_CONTROL_NOTE_KEY, size=(65, 2))],
+        [sg.Text("", key=CAMERA_CONTROL_NOTE_KEY, size=(75, 2))],
         [sg.HorizontalSeparator()],
         [sg.Text("Preview Location (e.g. x = 0, y = 0):")],
         [sg.Text("x:"), sg.InputText("0", size=(8, 1), enable_events=True, key=PREVIEW_LOC_X_KEY),
@@ -2024,7 +2164,7 @@ def main():
 
     # Create window and show it without plot
     window = sg.Window("3D Printer GUI Test", layout, location=(640, 36), finalize=True)
-    initialize_camera_control_panel(window, camera, supports_manual_camera_controls)
+    initialize_camera_control_panel(window, camera, supports_manual_camera_controls, supports_manual_iso_controls)
     refresh_crosshair_capture_state(
         enabled=supports_crosshair_overlay,
         radius=WL.CIRCLE_RADIUS,
@@ -2276,15 +2416,48 @@ def main():
             PIC_HEIGHT = new_pic_height
             #print(f"Global: {PIC_WIDTH, PIC_HEIGHT}")
         elif event in [EXPOSURE_AUTO_KEY, EXPOSURE_MANUAL_KEY]:
+            manual_selected = bool(values.get(EXPOSURE_MANUAL_KEY, False))
             update_camera_control_enabled_state(
                 window,
                 supports_manual_camera_controls,
-                bool(values.get(EXPOSURE_MANUAL_KEY, False))
+                manual_selected,
+                supports_manual_iso_controls
             )
+            if not supports_manual_camera_controls:
+                continue
+            if event == EXPOSURE_AUTO_KEY and not manual_selected:
+                apply_exposure_settings(
+                    values,
+                    window,
+                    camera,
+                    supports_manual_camera_controls,
+                    supports_manual_iso_controls,
+                )
+            elif event == EXPOSURE_MANUAL_KEY and manual_selected:
+                if supports_manual_iso_controls:
+                    enter_libcamera_manual_exposure_mode(values, window, camera)
+                else:
+                    seed_manual_exposure_fields(window, camera, False)
+        elif event in [MANUAL_ISO_KEY, MANUAL_SHUTTER_MS_KEY]:
+            if supports_manual_iso_controls and bool(values.get(EXPOSURE_MANUAL_KEY, False)):
+                apply_exposure_settings(
+                    values,
+                    window,
+                    camera,
+                    supports_manual_camera_controls,
+                    supports_manual_iso_controls,
+                    auto_apply=True,
+                )
         elif event == APPLY_EXPOSURE_BUTTON:
-            apply_exposure_settings(values, window, camera, supports_manual_camera_controls)
+            apply_exposure_settings(
+                values,
+                window,
+                camera,
+                supports_manual_camera_controls,
+                supports_manual_iso_controls,
+            )
         elif event == USE_AUTO_WB_BUTTON:
-            enable_auto_white_balance(camera, supports_manual_camera_controls)
+            enable_auto_white_balance(window, camera, supports_manual_camera_controls)
         elif event == AUTO_WB_LOCK_BUTTON:
             lock_auto_white_balance(values, window, camera, supports_manual_camera_controls)
         elif event == START_Z_STACK_CREATION_TEXT:

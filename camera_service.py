@@ -503,6 +503,12 @@ class LibcameraBackend(BaseCameraBackend):
             return _as_float(metadata.get("DigitalGain"), 1.0)
         if name == "analog_gain":
             return _as_float(metadata.get("AnalogueGain"), 1.0)
+        if name == "iso":
+            analog_gain = _as_float(metadata.get("AnalogueGain"), 0.0)
+            if analog_gain > 0:
+                return max(1, int(round(analog_gain * 100.0)))
+            fallback = self._controls.get("iso", default if default is not None else 100)
+            return max(1, int(round(_as_float(fallback, 100.0))))
         if name == "exposure_speed":
             return int(metadata.get("ExposureTime", self._controls.get("shutter_speed", 0)))
         if name == "awb_gains":
