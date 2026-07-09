@@ -54,7 +54,50 @@ def _normalized_backend_name(camera):
 
 
 def _is_libcamera_camera(camera):
-    return _normalized_backend_name(camera) in ("libcamera", "picamera2", "libcam")
+    backend = _normalized_backend_name(camera)
+    return (
+        backend in ("libcamera", "picamera2", "libcam", "libcamerabackend")
+        or "libcamera" in backend
+        or backend.startswith("picamera2")
+    )
+
+
+def _get_capture_metadata(camera):
+    metadata = getattr(camera, "last_capture_metadata", None)
+    if metadata is None:
+        getter = getattr(camera, "get_last_capture_metadata", None)
+        if callable(getter):
+            metadata = getter()
+    return metadata if isinstance(metadata, dict) else None
+
+
+def gen_cam_data(image_file_name, camera, capture_metadata=None):
+    if capture_metadata is None:
+        capture_metadata = _get_capture_metadata(camera)
+
+    if capture_metadata:
+        iso_value = max(1, int(round(float(capture_metadata.get("iso", 0) or 0))))
+        analog_gain = float(capture_metadata.get("analog_gain", 0.0) or 0.0)
+        digital_gain = float(capture_metadata.get("digital_gain", 1.0) or 1.0)
+        red_gain = float(capture_metadata.get("red_gain", 1.0) or 1.0)
+        blue_gain = float(capture_metadata.get("blue_gain", 1.0) or 1.0)
+        shutter_speed = int(capture_metadata.get("shutter_speed", 0) or 0)
+    else:
+        analog_gain = float(camera.analog_gain)
+        digital_gain = float(camera.digital_gain)
+
+        if _is_libcamera_camera(camera):
+            iso_value = max(1, int(round(analog_gain * 100.0)))
+        else:
+            iso_value = max(1, int(round(float(camera.iso))))
+
+        red_gain, blue_gain = camera.awb_gains
+        red_gain = float(red_gain)
+        blue_gain = float(blue_gain)
+        shutter_speed = int(camera.exposure_speed or 0)
+
+    data_row = [image_file_name, iso_value, analog_gain, digital_gain, red_gain, blue_gain, shutter_speed]
+    return data_row
 
 
 def wait_for_digital_gain_settle(camera, label="digital_gain", max_wait_seconds=6.0, poll_seconds=0.5, epsilon=0.02):
@@ -75,49 +118,6 @@ def get_unique_id():
     unique_id = current_time.strftime("%Y-%m-%d_%H%M%S")
     # print(f"unique_id: {unique_id}")
     return unique_id
-
-
-def gen_cam_data(image_file_name, camera):
-    
-    # Simulated Version
-    # Get Exposure Mode, Digital and Analog Gains
-    # analog_gain = random.random()
-    # digital_gain = random.random()
-
-    # Get AWB, red and blue gains
-    # red_gain = random.random()
-    # blue_gain = random.random()
-
-    # Get Shutterspeed
-    # shutter_speed = random.uniform(10.0, 35.0)
-    
-    # Real Version:
-    # Get Analog and Digital Gains
-    #analog_gain = camera.analog_gain # Gets Fraction DataType
-    #digital_gain = camera.digital_gain # Gets Fraction DataType
-    
-    analog_gain = float(camera.analog_gain)
-    digital_gain = float(camera.digital_gain)
-
-    if _is_libcamera_camera(camera):
-        iso_value = max(1, int(round(analog_gain * 100.0)))
-    else:
-        iso_value = int(round(float(camera.iso)))
-    
-    # Get AWB Gains, red and blue
-    red_gain, blue_gain = camera.awb_gains   # Gets a tuple (red, blue)
-    
-    # Convert Fraction to float
-    red_gain = float(red_gain)
-    blue_gain = float(blue_gain)
-    
-    # Get Shutterspeed
-    # If shutter_speed is set to 0 (auto), then exposure_speed will return actual shutterspeed
-    shutter_speed = camera.exposure_speed    # Gets value in microseconds
-    
-    data_row = [image_file_name, iso_value, analog_gain, digital_gain, red_gain, blue_gain, shutter_speed]
-
-    return data_row
 
 
 def init_csv_file():
@@ -149,6 +149,29 @@ def append_to_csv_file(data_row):
 
     f.close()
     print(f"File Updated: {full_path}")
+
+
+def ensure_csv_ready(folder_path):
+    global SAVE_CSV_FOLDER, SAVE_CSV_FILE
+
+    folder_path = os.path.normpath(folder_path)
+    if (
+        os.path.normpath(SAVE_CSV_FOLDER or "") == folder_path
+        and SAVE_CSV_FILE
+        and os.path.exists(os.path.join(folder_path, SAVE_CSV_FILE))
+    ):
+        return
+
+    SAVE_CSV_FOLDER = folder_path
+    init_csv_file()
+
+
+def record_capture_metadata(image_path, camera, capture_metadata=None):
+    folder_path = os.path.dirname(os.path.abspath(image_path))
+    ensure_csv_ready(folder_path)
+    data_row = gen_cam_data(image_path, camera, capture_metadata=capture_metadata)
+    append_to_csv_file(data_row)
+    return data_row
 
 
 def setup_camera():
