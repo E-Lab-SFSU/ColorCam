@@ -453,6 +453,19 @@ class LibcameraBackend(BaseCameraBackend):
     def is_previewing(self) -> bool:
         return self._previewing
 
+    def _picamera2_needs_rgb_to_bgr_swap(self, pixel_format: str) -> bool:
+        """
+        Picamera2 format names follow libcamera/DRM naming, which is inverted
+        relative to OpenCV byte order. See Picamera2 manual "Image formats".
+        """
+        fmt = str(pixel_format or "").upper()
+        if "BGR888" in fmt or "XBGR" in fmt:
+            return True
+        if "RGB888" in fmt or "XRGB" in fmt:
+            return False
+        # Preview defaults to XBGR8888 when format is unknown.
+        return True
+
     def _array_to_bgr(self, frame):
         if frame is None:
             return None
@@ -463,26 +476,20 @@ class LibcameraBackend(BaseCameraBackend):
 
         pixel_format = ""
         try:
-            pixel_format = str(self.picam2.camera_configuration()["main"]["format"]).upper()
+            pixel_format = str(self.picam2.camera_configuration()["main"]["format"])
         except Exception:
             pixel_format = ""
 
-        if frame.shape[2] == 4:
-            if "BGR" in pixel_format or "XBGR" in pixel_format:
-                return frame[..., :3].copy()
-            if "RGB" in pixel_format or "XRGB" in pixel_format:
-                return cv2.cvtColor(frame[..., :3], cv2.COLOR_RGB2BGR)
-            if cv2 is None:
-                return frame[..., :3]
-            return cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
+        channels = frame.shape[2]
+        if channels < 3:
+            return frame
 
-        if frame.shape[2] == 3:
-            if "BGR" in pixel_format:
-                return frame
+        rgb_slice = frame[..., :3]
+        if self._picamera2_needs_rgb_to_bgr_swap(pixel_format):
             if cv2 is None:
-                return frame
-            return cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-        return frame
+                return rgb_slice.copy()
+            return cv2.cvtColor(rgb_slice, cv2.COLOR_RGB2BGR)
+        return rgb_slice.copy()
 
     def get_preview_frame(self):
         if not self._previewing or not self._started:

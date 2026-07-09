@@ -224,6 +224,9 @@ WB_RED_GAIN_STATUS_KEY = "-WB RED GAIN STATUS-"
 WB_BLUE_GAIN_STATUS_KEY = "-WB BLUE GAIN STATUS-"
 CAMERA_CONTROL_NOTE_KEY = "-CAMERA CONTROL NOTE-"
 HISTOGRAM_KEY = "-HISTOGRAM-"
+HISTOGRAM_ROI_KEY = "-HISTOGRAM ROI-"
+HISTOGRAM_RGB_KEY = "-HISTOGRAM RGB-"
+HISTOGRAM_ROI_INFO_KEY = "-HISTOGRAM ROI INFO-"
 HISTOGRAM_CLIP_KEY = "-HISTOGRAM CLIP-"
 HISTOGRAM_STATUS_KEY = "-HISTOGRAM STATUS-"
 
@@ -1689,6 +1692,13 @@ def update_exposure_status_text(window, camera):
     window[EXPOSURE_STATUS_KEY].update(status_text)
 
 
+def _reset_histogram_display(window, status_message="Histogram updates while preview is running."):
+    window[HISTOGRAM_RGB_KEY].update("Mean RGB: --")
+    window[HISTOGRAM_ROI_INFO_KEY].update("ROI: --")
+    window[HISTOGRAM_CLIP_KEY].update("Highlight clip: --")
+    window[HISTOGRAM_STATUS_KEY].update(status_message)
+
+
 def _get_histogram_roi_pixels(frame, capture_state):
     if frame is None or frame.size == 0:
         return None, "No preview frame available."
@@ -1710,33 +1720,46 @@ def _get_histogram_roi_pixels(frame, capture_state):
     if not np.any(alpha_mask):
         return None, "No visible pixels in crosshair ROI."
 
-    return cropped_image[..., :3][alpha_mask], None
+    return {
+        "roi_pixels": cropped_image[..., :3][alpha_mask],
+        "cropped_bgra": cropped_image,
+        "roi_info": {
+            "pixel_count": int(np.count_nonzero(alpha_mask)),
+            "radius": int(capture_state["radius"]),
+            "preview_size": tuple(capture_state["preview_size"]),
+        },
+    }, None
 
 
 def update_histogram_display(window, camera):
     if not getattr(camera, "preview", False):
-        window[HISTOGRAM_CLIP_KEY].update("Highlight clip: --")
-        window[HISTOGRAM_STATUS_KEY].update("Histogram updates while preview is running.")
+        _reset_histogram_display(window)
         return
 
     capture_state = get_crosshair_capture_state()
     with CAMERA_LOCK:
         frame = camera.get_preview_frame()
 
-    roi_pixels, error_message = _get_histogram_roi_pixels(frame, capture_state)
-    if roi_pixels is None:
-        window[HISTOGRAM_CLIP_KEY].update("Highlight clip: --")
-        window[HISTOGRAM_STATUS_KEY].update(error_message)
+    roi_result, error_message = _get_histogram_roi_pixels(frame, capture_state)
+    if roi_result is None:
+        _reset_histogram_display(window, status_message=error_message)
         return
 
+    roi_pixels = roi_result["roi_pixels"]
+    cropped_bgra = roi_result["cropped_bgra"]
+    roi_info = roi_result["roi_info"]
+
     try:
-        histogram_png, clip_percentages, luminance_stats = MH.frame_to_histogram_png(roi_pixels)
+        histogram_png, clip_percentages, luminance_stats, channel_means = MH.frame_to_histogram_png(roi_pixels)
+        roi_thumb_png = MH.render_roi_thumbnail_png(cropped_bgra)
     except Exception as exc:
-        window[HISTOGRAM_CLIP_KEY].update("Highlight clip: --")
-        window[HISTOGRAM_STATUS_KEY].update(f"Histogram error: {exc}")
+        _reset_histogram_display(window, status_message=f"Histogram error: {exc}")
         return
 
     window[HISTOGRAM_KEY].update(data=histogram_png)
+    window[HISTOGRAM_ROI_KEY].update(data=roi_thumb_png)
+    window[HISTOGRAM_RGB_KEY].update(MH.format_mean_rgb(channel_means))
+    window[HISTOGRAM_ROI_INFO_KEY].update(MH.format_roi_info(roi_info))
     clip_text = MH.format_clip_status(clip_percentages, luminance_stats=luminance_stats)
     if MH.clip_status_exceeds_warning(clip_percentages, luminance_stats=luminance_stats):
         window[HISTOGRAM_CLIP_KEY].update(clip_text, text_color="red")
@@ -2168,7 +2191,10 @@ def main():
             [sg.Text("Current shutter: unavailable", key=EXPOSURE_STATUS_KEY, size=(35, 1))]
         ])],
         [sg.Frame("RGB Histogram (crosshair ROI)", [
-            [sg.Image(data=None, key=HISTOGRAM_KEY, size=(MH.DEFAULT_WIDTH, MH.DEFAULT_HEIGHT))],
+            [sg.Image(data=None, key=HISTOGRAM_KEY, size=(MH.DEFAULT_WIDTH, MH.DEFAULT_HEIGHT)),
+             sg.Image(data=None, key=HISTOGRAM_ROI_KEY, size=(MH.DEFAULT_ROI_THUMB_WIDTH, MH.DEFAULT_ROI_THUMB_HEIGHT))],
+            [sg.Text("Mean RGB: --", key=HISTOGRAM_RGB_KEY, size=(45, 1))],
+            [sg.Text("ROI: --", key=HISTOGRAM_ROI_INFO_KEY, size=(45, 1))],
             [sg.Text("Highlight clip: --", key=HISTOGRAM_CLIP_KEY, size=(45, 1))],
             [sg.Text("Histogram updates while preview is running.", key=HISTOGRAM_STATUS_KEY, size=(45, 1))]
         ])],
