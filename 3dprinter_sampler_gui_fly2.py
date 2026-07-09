@@ -1730,19 +1730,21 @@ def update_histogram_display(window, camera):
         return
 
     try:
-        histogram_png, clip_percentages = MH.frame_to_histogram_png(roi_pixels)
+        histogram_png, clip_percentages, luminance_stats = MH.frame_to_histogram_png(roi_pixels)
     except Exception as exc:
         window[HISTOGRAM_CLIP_KEY].update("Highlight clip: --")
         window[HISTOGRAM_STATUS_KEY].update(f"Histogram error: {exc}")
         return
 
     window[HISTOGRAM_KEY].update(data=histogram_png)
-    clip_text = MH.format_clip_status(clip_percentages)
-    if MH.clip_status_exceeds_warning(clip_percentages):
+    clip_text = MH.format_clip_status(clip_percentages, luminance_stats=luminance_stats)
+    if MH.clip_status_exceeds_warning(clip_percentages, luminance_stats=luminance_stats):
         window[HISTOGRAM_CLIP_KEY].update(clip_text, text_color="red")
     else:
         window[HISTOGRAM_CLIP_KEY].update(clip_text)
-    window[HISTOGRAM_STATUS_KEY].update("Histogram updates while preview is running.")
+    window[HISTOGRAM_STATUS_KEY].update(
+        MH.format_exposure_guidance(clip_percentages, luminance_stats)
+    )
 
 
 def update_locked_wb_text(window, gains):

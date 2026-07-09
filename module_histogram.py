@@ -18,6 +18,8 @@ DEFAULT_WIDTH = 280
 DEFAULT_HEIGHT = 120
 CLIP_THRESHOLD = 254
 CLIP_WARNING_PERCENT = 1.0
+UNDEREXPOSED_MEAN_LUMINANCE = 110
+BRIGHT_P95_LUMINANCE = 200
 
 CHANNEL_COLORS_BGR = (
     (255, 0, 0),    # Blue
@@ -66,6 +68,33 @@ def compute_rgb_histograms(bgr_pixels, bins=DEFAULT_BINS):
     return tuple(histograms)
 
 
+def compute_luminance_stats(bgr_pixels):
+    """
+    Return mean, median (p50), and p95 luminance for visible ROI pixels.
+    """
+    _require_numpy()
+
+    pixels = np.asarray(bgr_pixels, dtype=np.uint8)
+    if pixels.size == 0:
+        return {"mean": 0.0, "p50": 0.0, "p95": 0.0}
+
+    if pixels.ndim == 1:
+        pixels = pixels.reshape(-1, 3)
+    elif pixels.ndim != 2 or pixels.shape[1] != 3:
+        raise ValueError("bgr_pixels must be Nx3 BGR values.")
+
+    luminance = (
+        0.114 * pixels[:, 0].astype(np.float32)
+        + 0.587 * pixels[:, 1].astype(np.float32)
+        + 0.299 * pixels[:, 2].astype(np.float32)
+    )
+    return {
+        "mean": float(np.mean(luminance)),
+        "p50": float(np.percentile(luminance, 50)),
+        "p95": float(np.percentile(luminance, 95)),
+    }
+
+
 def compute_highlight_clip_percent(bgr_pixels, threshold=CLIP_THRESHOLD):
     """
     Return per-channel highlight clip percentages for B, G, R.
@@ -89,13 +118,40 @@ def compute_highlight_clip_percent(bgr_pixels, threshold=CLIP_THRESHOLD):
     return tuple(clip_counts)
 
 
-def format_clip_status(clip_percentages):
+def format_clip_status(clip_percentages, luminance_stats=None):
     blue_pct, green_pct, red_pct = clip_percentages
-    return f"Highlight clip: R {red_pct:.1f}% | G {green_pct:.1f}% | B {blue_pct:.1f}%"
+    clip_text = f"Highlight clip: R {red_pct:.1f}% | G {green_pct:.1f}% | B {blue_pct:.1f}%"
+    if luminance_stats is None:
+        return clip_text
+    return (
+        f"{clip_text} | Avg lum {luminance_stats['mean']:.0f} "
+        f"(p95 {luminance_stats['p95']:.0f})"
+    )
 
 
-def clip_status_exceeds_warning(clip_percentages, warning_percent=CLIP_WARNING_PERCENT):
-    return any(value > warning_percent for value in clip_percentages)
+def format_exposure_guidance(clip_percentages, luminance_stats):
+    mean_lum = luminance_stats["mean"]
+    p95_lum = luminance_stats["p95"]
+    max_clip = max(clip_percentages)
+
+    if mean_lum < UNDEREXPOSED_MEAN_LUMINANCE and max_clip < CLIP_WARNING_PERCENT:
+        return "Scene looks underexposed — increase exposure or ISO."
+
+    if max_clip >= CLIP_WARNING_PERCENT and mean_lum < UNDEREXPOSED_MEAN_LUMINANCE:
+        return "Sparse highlights are clipping, but the ROI is still mostly dark."
+
+    if max_clip >= CLIP_WARNING_PERCENT and p95_lum >= BRIGHT_P95_LUMINANCE:
+        return "Highlights are clipping — lower exposure or ISO."
+
+    return "Histogram updates while preview is running."
+
+
+def clip_status_exceeds_warning(clip_percentages, luminance_stats=None, warning_percent=CLIP_WARNING_PERCENT):
+    if not any(value > warning_percent for value in clip_percentages):
+        return False
+    if luminance_stats is None:
+        return True
+    return luminance_stats["p95"] >= BRIGHT_P95_LUMINANCE or luminance_stats["mean"] >= UNDEREXPOSED_MEAN_LUMINANCE
 
 
 def render_histogram_image(histograms, width=DEFAULT_WIDTH, height=DEFAULT_HEIGHT, has_clip=False):
@@ -155,15 +211,16 @@ def render_histogram_image(histograms, width=DEFAULT_WIDTH, height=DEFAULT_HEIGH
 
 def frame_to_histogram_png(bgr_pixels, width=DEFAULT_WIDTH, height=DEFAULT_HEIGHT, threshold=CLIP_THRESHOLD):
     """
-    Build histogram PNG bytes suitable for sg.Image.update(data=...).
+    Build histogram PNG bytes and stats suitable for sg.Image.update(data=...).
     """
     _require_cv2()
 
     histograms = compute_rgb_histograms(bgr_pixels)
     clip_percentages = compute_highlight_clip_percent(bgr_pixels, threshold=threshold)
-    has_clip = clip_status_exceeds_warning(clip_percentages, warning_percent=0.0)
+    luminance_stats = compute_luminance_stats(bgr_pixels)
+    has_clip = clip_status_exceeds_warning(clip_percentages, luminance_stats=luminance_stats, warning_percent=0.0)
     image = render_histogram_image(histograms, width=width, height=height, has_clip=has_clip)
     success, encoded = cv2.imencode(".png", image)
     if not success:
         raise RuntimeError("Failed to encode histogram image.")
-    return encoded.tobytes(), clip_percentages
+    return encoded.tobytes(), clip_percentages, luminance_stats

@@ -175,6 +175,7 @@ class PicameraBackend(BaseCameraBackend):
         self._overlay = None
         self._previewing = False
         self._recording = False
+        self._preview_window = (0, 0, preview_res[0], preview_res[1])
         self._last_frame = None
         self._frame_lock = Lock()
         self._frame_stop = Event()
@@ -191,7 +192,7 @@ class PicameraBackend(BaseCameraBackend):
             return
 
         try:
-            for frame in self.camera.capture_continuous(raw_capture, format="bgr", use_video_port=True):
+            for frame in self.camera.capture_continuous(raw_capture, format="bgr", use_video_port=False):
                 if self._frame_stop.is_set():
                     break
                 with self._frame_lock:
@@ -227,9 +228,19 @@ class PicameraBackend(BaseCameraBackend):
         with self._frame_lock:
             if self._last_frame is None:
                 return None
-            return self._last_frame.copy()
+            frame = self._last_frame.copy()
+        if cv2 is None:
+            return frame
+        _, _, preview_w, preview_h = self._preview_window
+        preview_w = max(int(preview_w), 1)
+        preview_h = max(int(preview_h), 1)
+        frame_h, frame_w = frame.shape[:2]
+        if (frame_w, frame_h) == (preview_w, preview_h):
+            return frame
+        return cv2.resize(frame, (preview_w, preview_h), interpolation=cv2.INTER_AREA)
 
     def start_preview(self, window: Tuple[int, int, int, int], alpha: int = 255):
+        self._preview_window = tuple(window)
         self.camera.start_preview(alpha=alpha, fullscreen=False, window=window)
         self._previewing = True
         self._start_frame_capture()
@@ -442,6 +453,37 @@ class LibcameraBackend(BaseCameraBackend):
     def is_previewing(self) -> bool:
         return self._previewing
 
+    def _array_to_bgr(self, frame):
+        if frame is None:
+            return None
+        if frame.ndim == 2:
+            if cv2 is None:
+                return None
+            return cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+
+        pixel_format = ""
+        try:
+            pixel_format = str(self.picam2.camera_configuration()["main"]["format"]).upper()
+        except Exception:
+            pixel_format = ""
+
+        if frame.shape[2] == 4:
+            if "BGR" in pixel_format or "XBGR" in pixel_format:
+                return frame[..., :3].copy()
+            if "RGB" in pixel_format or "XRGB" in pixel_format:
+                return cv2.cvtColor(frame[..., :3], cv2.COLOR_RGB2BGR)
+            if cv2 is None:
+                return frame[..., :3]
+            return cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
+
+        if frame.shape[2] == 3:
+            if "BGR" in pixel_format:
+                return frame
+            if cv2 is None:
+                return frame
+            return cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+        return frame
+
     def get_preview_frame(self):
         if not self._previewing or not self._started:
             return None
@@ -451,19 +493,18 @@ class LibcameraBackend(BaseCameraBackend):
             frame = self.picam2.capture_array("main")
         except Exception:
             return None
+        frame = self._array_to_bgr(frame)
         if frame is None:
             return None
-        if frame.ndim == 2:
-            if cv2 is None:
-                return None
-            return cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
-        if frame.shape[2] == 4:
-            if cv2 is None:
-                return frame[..., :3]
-            return cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
-        if frame.shape[2] == 3 and cv2 is not None:
-            return cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-        return frame
+        if cv2 is None:
+            return frame
+        _, _, preview_w, preview_h = self._preview_window
+        preview_w = max(int(preview_w), 1)
+        preview_h = max(int(preview_h), 1)
+        frame_h, frame_w = frame.shape[:2]
+        if (frame_w, frame_h) == (preview_w, preview_h):
+            return frame
+        return cv2.resize(frame, (preview_w, preview_h), interpolation=cv2.INTER_AREA)
 
     def set_resolution(self, res: Tuple[int, int]):
         self._resolution = tuple(res)
@@ -939,7 +980,9 @@ class USBCameraBackend(BaseCameraBackend):
         with self._io_lock:
             if self._last_frame is None:
                 return None
-            return self._last_frame.copy()
+            frame = self._last_frame.copy()
+        _, _, preview_w, preview_h = self._preview_window
+        return self._resize_if_needed(frame, (max(int(preview_w), 1), max(int(preview_h), 1)))
 
     def set_resolution(self, res: Tuple[int, int]):
         width, height = int(res[0]), int(res[1])
