@@ -70,6 +70,7 @@ import module_color_assay as MCA
 import module_experiment_timer as ET
 import module_well_location_helper as WL
 import module_well_location_calculator as WLC
+import module_histogram as MH
 from module_snake_path import generate_snake_csv
 from camera_service import create_legacy_camera
 
@@ -222,6 +223,9 @@ AUTO_WB_LOCK_BUTTON = "Auto WB + Lock"
 WB_RED_GAIN_STATUS_KEY = "-WB RED GAIN STATUS-"
 WB_BLUE_GAIN_STATUS_KEY = "-WB BLUE GAIN STATUS-"
 CAMERA_CONTROL_NOTE_KEY = "-CAMERA CONTROL NOTE-"
+HISTOGRAM_KEY = "-HISTOGRAM-"
+HISTOGRAM_CLIP_KEY = "-HISTOGRAM CLIP-"
+HISTOGRAM_STATUS_KEY = "-HISTOGRAM STATUS-"
 
 is_running_experiment = False
 # Camera access lock to avoid preview/still races
@@ -1685,6 +1689,62 @@ def update_exposure_status_text(window, camera):
     window[EXPOSURE_STATUS_KEY].update(status_text)
 
 
+def _get_histogram_roi_pixels(frame, capture_state):
+    if frame is None or frame.size == 0:
+        return None, "No preview frame available."
+
+    if not capture_state.get("enabled"):
+        return None, "Enable crosshair for histogram."
+
+    try:
+        cropped_image = WL.crop_image_to_crosshair_circle(
+            frame,
+            preview_size=capture_state["preview_size"],
+            radius=capture_state["radius"],
+            line_thickness=capture_state.get("line_thickness", 1),
+        )
+    except (TypeError, ValueError):
+        return None, "Unable to crop crosshair ROI."
+
+    alpha_mask = cropped_image[..., 3] > 0
+    if not np.any(alpha_mask):
+        return None, "No visible pixels in crosshair ROI."
+
+    return cropped_image[..., :3][alpha_mask], None
+
+
+def update_histogram_display(window, camera):
+    if not getattr(camera, "preview", False):
+        window[HISTOGRAM_CLIP_KEY].update("Highlight clip: --")
+        window[HISTOGRAM_STATUS_KEY].update("Histogram updates while preview is running.")
+        return
+
+    capture_state = get_crosshair_capture_state()
+    with CAMERA_LOCK:
+        frame = camera.get_preview_frame()
+
+    roi_pixels, error_message = _get_histogram_roi_pixels(frame, capture_state)
+    if roi_pixels is None:
+        window[HISTOGRAM_CLIP_KEY].update("Highlight clip: --")
+        window[HISTOGRAM_STATUS_KEY].update(error_message)
+        return
+
+    try:
+        histogram_png, clip_percentages = MH.frame_to_histogram_png(roi_pixels)
+    except Exception as exc:
+        window[HISTOGRAM_CLIP_KEY].update("Highlight clip: --")
+        window[HISTOGRAM_STATUS_KEY].update(f"Histogram error: {exc}")
+        return
+
+    window[HISTOGRAM_KEY].update(data=histogram_png)
+    clip_text = MH.format_clip_status(clip_percentages)
+    if MH.clip_status_exceeds_warning(clip_percentages):
+        window[HISTOGRAM_CLIP_KEY].update(clip_text, text_color="red")
+    else:
+        window[HISTOGRAM_CLIP_KEY].update(clip_text)
+    window[HISTOGRAM_STATUS_KEY].update("Histogram updates while preview is running.")
+
+
 def update_locked_wb_text(window, gains):
     normalized_gains = normalize_awb_gains(gains)
     if normalized_gains is None:
@@ -2105,6 +2165,11 @@ def main():
             manual_exposure_row,
             [sg.Text("Current shutter: unavailable", key=EXPOSURE_STATUS_KEY, size=(35, 1))]
         ])],
+        [sg.Frame("RGB Histogram (crosshair ROI)", [
+            [sg.Image(data=None, key=HISTOGRAM_KEY, size=(MH.DEFAULT_WIDTH, MH.DEFAULT_HEIGHT))],
+            [sg.Text("Highlight clip: --", key=HISTOGRAM_CLIP_KEY, size=(45, 1))],
+            [sg.Text("Histogram updates while preview is running.", key=HISTOGRAM_STATUS_KEY, size=(45, 1))]
+        ])],
         [sg.Frame("White Balance", [
             [sg.Button(USE_AUTO_WB_BUTTON, disabled=(not supports_manual_camera_controls)),
              sg.Button(AUTO_WB_LOCK_BUTTON, disabled=(not supports_manual_camera_controls))],
@@ -2198,6 +2263,8 @@ def main():
     # Throttle preview window polling to reduce CPU use
     preview_check_interval = 0.2
     last_preview_check = time.monotonic()
+    histogram_interval = 0.25
+    last_histogram_update = 0.0
     # **** Note: This for loop may cause problems if the camera feed dies, it will close everything? ****
     while True:
         event, values = window.read(timeout=20)
@@ -2690,6 +2757,11 @@ def main():
                         camera.remove_overlay(crosshair_overlay)
                     crosshair_overlay = None
         
+        now = time.monotonic()
+        if now - last_histogram_update >= histogram_interval:
+            last_histogram_update = now
+            update_histogram_display(window, camera)
+
         # print("You entered ", values[0])
         
         # Original

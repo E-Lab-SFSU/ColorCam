@@ -43,6 +43,11 @@ try:
 except ImportError:
     np = None
 
+try:
+    from picamera.array import PiRGBArray
+except ImportError:
+    PiRGBArray = None
+
 
 def _as_float(value, default=0.0):
     if value is None:
@@ -153,6 +158,12 @@ class BaseCameraBackend:
     def close(self):
         raise NotImplementedError
 
+    def get_last_capture_metadata(self):
+        return getattr(self, "_last_capture_metadata", None)
+
+    def get_preview_frame(self):
+        return None
+
 
 class PicameraBackend(BaseCameraBackend):
     def __init__(self, rotation: int = 0, preview_res: Tuple[int, int] = (960, 720)):
@@ -164,12 +175,67 @@ class PicameraBackend(BaseCameraBackend):
         self._overlay = None
         self._previewing = False
         self._recording = False
+        self._last_frame = None
+        self._frame_lock = Lock()
+        self._frame_stop = Event()
+        self._frame_thread = None
+
+    def _frame_capture_loop(self):
+        if PiRGBArray is None:
+            return
+
+        try:
+            width, height = self.camera.resolution
+            raw_capture = PiRGBArray(self.camera, size=(width, height))
+        except Exception:
+            return
+
+        try:
+            for frame in self.camera.capture_continuous(raw_capture, format="bgr", use_video_port=True):
+                if self._frame_stop.is_set():
+                    break
+                with self._frame_lock:
+                    self._last_frame = frame.array.copy()
+                raw_capture.truncate(0)
+        except Exception:
+            pass
+        finally:
+            try:
+                raw_capture.close()
+            except Exception:
+                pass
+
+    def _start_frame_capture(self):
+        if PiRGBArray is None or self._frame_thread is not None:
+            return
+        self._frame_stop.clear()
+        self._frame_thread = Thread(target=self._frame_capture_loop, daemon=True)
+        self._frame_thread.start()
+
+    def _stop_frame_capture(self):
+        if self._frame_thread is None:
+            return
+        self._frame_stop.set()
+        self._frame_thread.join(timeout=2.0)
+        self._frame_thread = None
+        with self._frame_lock:
+            self._last_frame = None
+
+    def get_preview_frame(self):
+        if not self._previewing:
+            return None
+        with self._frame_lock:
+            if self._last_frame is None:
+                return None
+            return self._last_frame.copy()
 
     def start_preview(self, window: Tuple[int, int, int, int], alpha: int = 255):
         self.camera.start_preview(alpha=alpha, fullscreen=False, window=window)
         self._previewing = True
+        self._start_frame_capture()
 
     def stop_preview(self):
+        self._stop_frame_capture()
         if self._previewing:
             self.camera.stop_preview()
         self._previewing = False
@@ -188,8 +254,24 @@ class PicameraBackend(BaseCameraBackend):
         if res:
             self.camera.resolution = res
         self.camera.capture(path)
+        self._last_capture_metadata = self._build_capture_metadata()
         if res:
             self.camera.resolution = original_res
+
+    def _build_capture_metadata(self):
+        analog_gain = _as_float(getattr(self.camera, "analog_gain", 1.0), 1.0)
+        digital_gain = _as_float(getattr(self.camera, "digital_gain", 1.0), 1.0)
+        iso_value = max(1, int(round(_as_float(getattr(self.camera, "iso", 100), 100.0))))
+        gains = getattr(self.camera, "awb_gains", (1.0, 1.0))
+        shutter_speed = int(getattr(self.camera, "exposure_speed", 0) or getattr(self.camera, "shutter_speed", 0) or 0)
+        return {
+            "iso": iso_value,
+            "analog_gain": analog_gain,
+            "digital_gain": digital_gain,
+            "red_gain": _as_float(gains[0], 1.0),
+            "blue_gain": _as_float(gains[1], 1.0),
+            "shutter_speed": shutter_speed,
+        }
 
     def add_overlay(self, buffer, size, window, alpha: int = 255):
         if self._overlay:
@@ -257,6 +339,8 @@ class PicameraBackend(BaseCameraBackend):
             self.stop_recording()
         if self._previewing:
             self.stop_preview()
+        else:
+            self._stop_frame_capture()
         self.camera.close()
 
 
@@ -358,6 +442,29 @@ class LibcameraBackend(BaseCameraBackend):
     def is_previewing(self) -> bool:
         return self._previewing
 
+    def get_preview_frame(self):
+        if not self._previewing or not self._started:
+            return None
+        if np is None:
+            return None
+        try:
+            frame = self.picam2.capture_array("main")
+        except Exception:
+            return None
+        if frame is None:
+            return None
+        if frame.ndim == 2:
+            if cv2 is None:
+                return None
+            return cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+        if frame.shape[2] == 4:
+            if cv2 is None:
+                return frame[..., :3]
+            return cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
+        if frame.shape[2] == 3 and cv2 is not None:
+            return cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+        return frame
+
     def set_resolution(self, res: Tuple[int, int]):
         self._resolution = tuple(res)
         self._configure_preview(self._resolution, self._rotation)
@@ -377,10 +484,51 @@ class LibcameraBackend(BaseCameraBackend):
             # Skip preview overlay reapply during the temporary still mode to
             # avoid libcamera overlay buffer-count errors mid-capture.
             self._reconfigure(still_config, reapply_overlay=False)
-            self.picam2.capture_file(path)
+            capture_result = self.picam2.capture_file(path)
+            self._last_capture_metadata = self._build_capture_metadata(capture_result)
             self._configure_preview(self._resolution, self._rotation)
             return
-        self.picam2.capture_file(path)
+        capture_result = self.picam2.capture_file(path)
+        self._last_capture_metadata = self._build_capture_metadata(capture_result)
+
+    def _build_capture_metadata(self, capture_result=None):
+        metadata = capture_result
+        if metadata is not None and hasattr(metadata, "get_metadata"):
+            metadata = metadata.get_metadata()
+        if not isinstance(metadata, dict):
+            metadata = {}
+            try:
+                metadata = self.picam2.capture_metadata() or {}
+            except Exception:
+                metadata = {}
+
+        analog_gain = _as_float(metadata.get("AnalogueGain"), 0.0)
+        digital_gain = _as_float(metadata.get("DigitalGain"), 1.0)
+        if analog_gain <= 0:
+            analog_gain = max(1.0, _as_float(self._controls.get("iso", 100), 100.0) / 100.0)
+        iso_value = max(1, int(round(analog_gain * 100.0)))
+
+        gains = metadata.get("ColourGains")
+        if isinstance(gains, (list, tuple)) and len(gains) == 2:
+            red_gain = _as_float(gains[0], 1.0)
+            blue_gain = _as_float(gains[1], 1.0)
+        else:
+            fallback = self._controls.get("awb_gains", (1.0, 1.0))
+            red_gain = _as_float(fallback[0], 1.0)
+            blue_gain = _as_float(fallback[1], 1.0)
+
+        shutter_speed = int(metadata.get("ExposureTime", 0) or 0)
+        if shutter_speed <= 0:
+            shutter_speed = int(self._controls.get("shutter_speed", 0) or 0)
+
+        return {
+            "iso": iso_value,
+            "analog_gain": analog_gain,
+            "digital_gain": digital_gain,
+            "red_gain": red_gain,
+            "blue_gain": blue_gain,
+            "shutter_speed": shutter_speed,
+        }
 
     def _overlay_setter(self):
         setter = getattr(self.picam2, "set_overlay", None)
@@ -785,6 +933,14 @@ class USBCameraBackend(BaseCameraBackend):
     def is_previewing(self) -> bool:
         return self._previewing
 
+    def get_preview_frame(self):
+        if not self._previewing:
+            return None
+        with self._io_lock:
+            if self._last_frame is None:
+                return None
+            return self._last_frame.copy()
+
     def set_resolution(self, res: Tuple[int, int]):
         width, height = int(res[0]), int(res[1])
         self._resolution = (width, height)
@@ -814,6 +970,19 @@ class USBCameraBackend(BaseCameraBackend):
         ok = cv2.imwrite(path, frame)
         if not ok:
             raise RuntimeError(f"Failed to write captured image to: {path}")
+        self._last_capture_metadata = self._build_capture_metadata()
+
+    def _build_capture_metadata(self):
+        iso_value = max(1, int(round(_as_float(self._controls.get("iso", 100), 100.0))))
+        gains = self._controls.get("awb_gains", (1.0, 1.0))
+        return {
+            "iso": iso_value,
+            "analog_gain": 1.0,
+            "digital_gain": 1.0,
+            "red_gain": _as_float(gains[0], 1.0),
+            "blue_gain": _as_float(gains[1], 1.0),
+            "shutter_speed": int(self._controls.get("shutter_speed", 0) or 0),
+        }
 
     def _apply_overlay(self, frame, overlay_data):
         bgr = overlay_data.get("bgr")
@@ -1016,6 +1185,20 @@ class CameraService:
         with self.lock:
             self.backend.capture_still(path, res=res)
 
+    def get_last_capture_metadata(self):
+        with self.lock:
+            getter = getattr(self.backend, "get_last_capture_metadata", None)
+            if callable(getter):
+                return getter()
+            return getattr(self.backend, "_last_capture_metadata", None)
+
+    def get_preview_frame(self):
+        with self.lock:
+            getter = getattr(self.backend, "get_preview_frame", None)
+            if callable(getter):
+                return getter()
+            return None
+
     def add_overlay(self, buffer, size, window, alpha: int = 255):
         with self.lock:
             return self.backend.add_overlay(buffer, size, window, alpha)
@@ -1171,6 +1354,13 @@ class LegacyCameraAdapter:
 
     def capture(self, path, res=None):
         self._service.capture_still(path, res=res)
+
+    @property
+    def last_capture_metadata(self):
+        return self._service.get_last_capture_metadata()
+
+    def get_preview_frame(self):
+        return self._service.get_preview_frame()
 
     def add_overlay(self, buffer, size=None, fullscreen=False, window=None, alpha=255, **kwargs):
         del fullscreen, kwargs
