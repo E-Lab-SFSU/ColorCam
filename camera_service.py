@@ -128,6 +128,32 @@ class BaseCameraBackend:
     def capture_still(self, path: str, res: Optional[Tuple[int, int]] = None):
         raise NotImplementedError
 
+    def capture_still_with_dng(
+        self,
+        png_path: str,
+        dng_path: Optional[str] = None,
+        res: Optional[Tuple[int, int]] = None,
+        main_crop_box: Optional[Tuple[int, int, int, int]] = None,
+    ):
+        """
+        Capture a PNG still and optionally a sibling DNG.
+
+        Returns {"png": bool, "dng": bool|None}. dng is None when not requested,
+        False when requested but unsupported/failed, True on success.
+        """
+        del main_crop_box
+        result = {"png": False, "dng": None}
+        try:
+            self.capture_still(png_path, res=res)
+            result["png"] = True
+        except Exception as exc:
+            print(f"PNG capture failed: {exc}")
+            return result
+        if dng_path:
+            print("DNG capture requires Picamera2/libcamera backend; skipped.")
+            result["dng"] = False
+        return result
+
     def add_overlay(self, buffer, size, window, alpha: int = 255):
         raise NotImplementedError
 
@@ -392,6 +418,7 @@ class LibcameraBackend(BaseCameraBackend):
             "shutter_speed": 0,
             "led": False,
         }
+        self._last_capture_metadata = None
 
         self._configure_preview(self._resolution, self._rotation)
         self.picam2.start()
@@ -538,6 +565,155 @@ class LibcameraBackend(BaseCameraBackend):
             return
         capture_result = self.picam2.capture_file(path)
         self._last_capture_metadata = self._build_capture_metadata(capture_result)
+
+    def capture_still_with_dng(
+        self,
+        png_path: str,
+        dng_path: Optional[str] = None,
+        res: Optional[Tuple[int, int]] = None,
+        main_crop_box: Optional[Tuple[int, int, int, int]] = None,
+    ):
+        """
+        Capture main + raw from one request so PNG and DNG share the same exposure.
+        main_crop_box is (left, top, width, height) in main-image coordinates.
+        """
+        result = {"png": False, "dng": None if not dng_path else False}
+        target_res = tuple(res) if res else self._resolution
+        request = None
+        try:
+            still_kwargs = {
+                "main": {"size": tuple(target_res)},
+                "buffer_count": 2,
+            }
+            if dng_path:
+                still_kwargs["raw"] = {}
+            still_config = self.picam2.create_still_configuration(**still_kwargs)
+            self._reconfigure(still_config, reapply_overlay=False)
+
+            if dng_path:
+                request = self.picam2.capture_request()
+                self._last_capture_metadata = self._build_capture_metadata(request)
+                try:
+                    request.save("main", png_path)
+                    result["png"] = True
+                except Exception as exc:
+                    print(f"PNG capture failed: {exc}")
+
+                try:
+                    self._save_dng_from_request(request, dng_path, main_crop_box=main_crop_box)
+                    result["dng"] = True
+                except Exception as exc:
+                    print(f"DNG capture failed: {exc}")
+                    result["dng"] = False
+            else:
+                capture_result = self.picam2.capture_file(png_path)
+                self._last_capture_metadata = self._build_capture_metadata(capture_result)
+                result["png"] = True
+        except Exception as exc:
+            print(f"Still capture failed: {exc}")
+        finally:
+            if request is not None:
+                try:
+                    request.release()
+                except Exception:
+                    pass
+            try:
+                self._configure_preview(self._resolution, self._rotation)
+            except Exception as exc:
+                print(f"Failed to restore preview after still capture: {exc}")
+        return result
+
+    def _save_dng_from_request(self, request, dng_path: str, main_crop_box=None):
+        if not main_crop_box:
+            request.save_dng(dng_path)
+            return
+
+        raw_stream = request.config.get("raw") if hasattr(request, "config") else None
+        if not raw_stream:
+            raise RuntimeError("Raw stream is not configured for DNG capture.")
+
+        from module_well_location_helper import align_box_for_bayer, scale_roi_box
+
+        main_size = tuple(request.config["main"]["size"])
+        raw_size = tuple(raw_stream["size"])
+        scaled = scale_roi_box(main_crop_box, main_size, raw_size)
+        left, top, width, height = align_box_for_bayer(
+            scaled[0],
+            scaled[1],
+            scaled[2],
+            scaled[3],
+            raw_size[0],
+            raw_size[1],
+        )
+        if width < 2 or height < 2:
+            raise RuntimeError("Cropped RAW ROI is too small after Bayer alignment.")
+
+        helpers = getattr(self.picam2, "helpers", None)
+        if helpers is None or not hasattr(helpers, "save_dng"):
+            raise RuntimeError("Picamera2 helpers.save_dng is unavailable.")
+
+        try:
+            raw_array = request.make_array("raw")
+            if raw_array is None or raw_array.size == 0:
+                raise RuntimeError("Raw capture buffer is empty.")
+
+            pixel_width = int(raw_size[0])
+            pixel_height = int(raw_size[1])
+            if raw_array.ndim != 2 or raw_array.shape[0] < pixel_height:
+                raise RuntimeError(
+                    f"Unexpected raw array shape for cropping: {getattr(raw_array, 'shape', None)}"
+                )
+
+            array_width = int(raw_array.shape[1])
+            dng_config = dict(raw_stream)
+            if array_width == pixel_width:
+                cropped = np.ascontiguousarray(raw_array[top:top + height, left:left + width])
+            elif array_width > pixel_width:
+                # Stride-packed row: scale horizontal crop from pixels into samples/bytes.
+                scale = array_width / float(pixel_width)
+                byte_left = int(round(left * scale))
+                byte_width = int(round(width * scale))
+                byte_left -= byte_left % 2
+                byte_width -= byte_width % 2
+                byte_width = max(byte_width, 2)
+                if byte_left + byte_width > array_width:
+                    byte_width = array_width - byte_left
+                    byte_width -= byte_width % 2
+                cropped = np.ascontiguousarray(
+                    raw_array[top:top + height, byte_left:byte_left + byte_width]
+                )
+                width = max(int(round(byte_width / scale)), 2)
+                width -= width % 2
+            else:
+                raise RuntimeError(
+                    f"Raw array width {array_width} is smaller than sensor width {pixel_width}; cannot crop."
+                )
+
+            if cropped.size == 0:
+                raise RuntimeError("Cropped RAW buffer is empty.")
+
+            dng_config["size"] = (width, height)
+            dng_config["stride"] = int(cropped.strides[0])
+            dng_config["framesize"] = int(cropped.nbytes)
+
+            # If make_array returned unpacked samples, point DNG config at unpacked format.
+            try:
+                from picamera2.sensor_format import SensorFormat
+
+                fmt = SensorFormat(str(dng_config.get("format", "")))
+                if getattr(fmt, "packing", None):
+                    unpacked = getattr(fmt, "unpacked", None)
+                    if unpacked:
+                        dng_config["format"] = unpacked
+            except Exception:
+                pass
+
+            metadata = request.get_metadata() if hasattr(request, "get_metadata") else {}
+            buffer = np.ascontiguousarray(cropped).view(np.uint8).reshape(-1)
+            helpers.save_dng(buffer, metadata, dng_config, dng_path)
+        except Exception as crop_exc:
+            print(f"Cropped DNG failed ({crop_exc}); saving full-frame DNG instead.")
+            request.save_dng(dng_path)
 
     def _build_capture_metadata(self, capture_result=None):
         metadata = capture_result
@@ -1235,6 +1411,21 @@ class CameraService:
         with self.lock:
             self.backend.capture_still(path, res=res)
 
+    def capture_still_with_dng(
+        self,
+        png_path: str,
+        dng_path: Optional[str] = None,
+        res: Optional[Tuple[int, int]] = None,
+        main_crop_box: Optional[Tuple[int, int, int, int]] = None,
+    ):
+        with self.lock:
+            return self.backend.capture_still_with_dng(
+                png_path,
+                dng_path=dng_path,
+                res=res,
+                main_crop_box=main_crop_box,
+            )
+
     def get_last_capture_metadata(self):
         with self.lock:
             getter = getattr(self.backend, "get_last_capture_metadata", None)
@@ -1404,6 +1595,14 @@ class LegacyCameraAdapter:
 
     def capture(self, path, res=None):
         self._service.capture_still(path, res=res)
+
+    def capture_with_dng(self, path, dng_path=None, res=None, main_crop_box=None):
+        return self._service.capture_still_with_dng(
+            path,
+            dng_path=dng_path,
+            res=res,
+            main_crop_box=main_crop_box,
+        )
 
     @property
     def last_capture_metadata(self):

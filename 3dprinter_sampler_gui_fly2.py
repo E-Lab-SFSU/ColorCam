@@ -939,14 +939,30 @@ def write_crosshair_cropped_png(source_path, target_path, capture_state):
         raise RuntimeError(f"Unable to save cropped PNG: {target_path}")
 
 
-def capture_still(camera, file_full_path, capture_state=None):
-    """Safely capture a still while keeping the live preview running."""
+def _main_crop_box_from_capture_state(capture_state, still_size):
+    """Return (left, top, width, height) in still/main coordinates, or None."""
+    if not capture_state or not capture_state.get("enabled"):
+        return None
+    still_width, still_height = still_size
+    left, top, diameter, _scaled_radius = WL.get_crosshair_roi_box(
+        (still_height, still_width),
+        preview_size=capture_state["preview_size"],
+        radius=capture_state["radius"],
+        line_thickness=capture_state.get("line_thickness", WL.CIRCLE_THICKNESS),
+    )
+    return (left, top, diameter, diameter)
+
+
+def capture_still(camera, file_full_path, capture_state=None, save_dng=True):
+    """Safely capture a still (and optional DNG) while keeping the live preview running."""
     if capture_state is None:
         capture_state = get_crosshair_capture_state()
     crop_enabled = bool(capture_state["enabled"])
     capture_path = file_full_path
     temp_capture_path = None
     capture_res = (PIC_WIDTH, PIC_HEIGHT)
+    dng_path = P.get_dng_path_for_picture(file_full_path) if save_dng else None
+    main_crop_box = _main_crop_box_from_capture_state(capture_state, capture_res) if save_dng else None
 
     if crop_enabled:
         temp_fd, temp_capture_path = tempfile.mkstemp(prefix="colorcam_capture_", suffix=C.FILENAME_PICTURE_EXTENSION)
@@ -956,8 +972,24 @@ def capture_still(camera, file_full_path, capture_state=None):
     success = False
     try:
         with CAMERA_LOCK:
-            camera.capture(capture_path, res=capture_res)
-            success = True
+            capture_with_dng = getattr(camera, "capture_with_dng", None)
+            if save_dng and callable(capture_with_dng):
+                result = capture_with_dng(
+                    capture_path,
+                    dng_path=dng_path,
+                    res=capture_res,
+                    main_crop_box=main_crop_box,
+                )
+                success = bool(result.get("png"))
+                if dng_path and result.get("dng") is False:
+                    print(f"DNG was not saved for: {dng_path}")
+                elif result.get("dng"):
+                    print(f"Saved DNG: {dng_path}")
+            else:
+                if save_dng and not callable(capture_with_dng):
+                    print("DNG capture requires Picamera2/libcamera backend; skipped.")
+                camera.capture(capture_path, res=capture_res)
+                success = True
 
         if success and crop_enabled and temp_capture_path is not None:
             write_crosshair_cropped_png(temp_capture_path, file_full_path, capture_state)
@@ -1100,7 +1132,7 @@ def create_z_stack(z_start, z_end, z_increment, save_folder_location, camera):
         # Take Picture and save to folder location
         save_file_name = f"_image_{z_rounded_str}_{C.FILENAME_PICTURE_EXTENSION}"
         save_full_path = f"{save_folder_path}/{save_file_name}"
-        if capture_still(camera, save_full_path):
+        if capture_still(camera, save_full_path, save_dng=False):
             print(f"Saved Image: {save_full_path}")
 
     

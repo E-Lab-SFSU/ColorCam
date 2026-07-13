@@ -164,6 +164,27 @@ def get_file_full_path(folder_path, well_number, total_wells=None):
     return file_full_path
 
 
+RAWS_FOLDER_NAME = "RAWS"
+
+
+def ensure_raws_dir(folder_path):
+    """Create and return the RAWS subdirectory under folder_path."""
+    raws_path = os.path.join(folder_path, RAWS_FOLDER_NAME)
+    if not os.path.isdir(raws_path):
+        os.makedirs(raws_path, exist_ok=True)
+    return raws_path
+
+
+def get_dng_path_for_picture(png_path):
+    """
+    Return sibling DNG path under <png_dir>/RAWS/<stem>.dng for a PNG path.
+    """
+    folder_path = os.path.dirname(png_path)
+    stem = os.path.splitext(os.path.basename(png_path))[0]
+    raws_path = ensure_raws_dir(folder_path)
+    return os.path.join(raws_path, f"{stem}.dng")
+
+
 # ==== TEST CODE ====
 
 def main():

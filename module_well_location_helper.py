@@ -166,21 +166,24 @@ def draw_cross_hairs(image):
     return image_edit
 
 
-def crop_image_to_crosshair_circle(image, preview_size, radius, line_thickness=1):
+def get_crosshair_roi_box(image_shape, preview_size, radius, line_thickness=1):
     """
-    Return a centered BGRA crop whose visible area stays inside the crosshair circle.
+    Return (left, top, diameter, scaled_radius) for the centered crosshair ROI.
+
+    image_shape: (height, width, ...) or (height, width)
     """
-    if image is None or image.size == 0:
-        raise ValueError("image is empty")
+    if image_shape is None or len(image_shape) < 2:
+        raise ValueError("image_shape must contain height and width")
     if preview_size is None or len(preview_size) < 2:
         raise ValueError("preview_size must contain width and height")
 
+    still_height = max(int(image_shape[0]), 1)
+    still_width = max(int(image_shape[1]), 1)
     preview_width = max(int(preview_size[0]), 1)
     preview_height = max(int(preview_size[1]), 1)
     radius = max(int(radius), 1)
     line_thickness = max(int(line_thickness), 1)
 
-    still_height, still_width = image.shape[:2]
     scale = min(still_width / float(preview_width), still_height / float(preview_height))
     effective_preview_radius = max(radius - (line_thickness / 2.0), 0.5)
     scaled_radius = max(int(np.floor(effective_preview_radius * scale)), 1)
@@ -195,6 +198,69 @@ def crop_image_to_crosshair_circle(image, preview_size, radius, line_thickness=1
     diameter = scaled_radius * 2
     left = center_x - scaled_radius
     top = center_y - scaled_radius
+    return left, top, diameter, scaled_radius
+
+
+def align_box_for_bayer(left, top, width, height, image_width, image_height):
+    """
+    Snap a crop box to even coordinates/sizes so Bayer CFA phase stays valid.
+    """
+    left = max(int(left), 0)
+    top = max(int(top), 0)
+    width = max(int(width), 0)
+    height = max(int(height), 0)
+    image_width = max(int(image_width), 0)
+    image_height = max(int(image_height), 0)
+
+    left -= left % 2
+    top -= top % 2
+    width -= width % 2
+    height -= height % 2
+
+    if left + width > image_width:
+        width = image_width - left
+        width -= width % 2
+    if top + height > image_height:
+        height = image_height - top
+        height -= height % 2
+
+    width = max(width, 0)
+    height = max(height, 0)
+    return left, top, width, height
+
+
+def scale_roi_box(box, src_size, dst_size):
+    """
+    Scale (left, top, width, height) from src (width, height) to dst (width, height).
+    """
+    left, top, width, height = box
+    src_w = max(float(src_size[0]), 1.0)
+    src_h = max(float(src_size[1]), 1.0)
+    dst_w = float(dst_size[0])
+    dst_h = float(dst_size[1])
+    scale_x = dst_w / src_w
+    scale_y = dst_h / src_h
+    return (
+        int(round(left * scale_x)),
+        int(round(top * scale_y)),
+        max(int(round(width * scale_x)), 1),
+        max(int(round(height * scale_y)), 1),
+    )
+
+
+def crop_image_to_crosshair_circle(image, preview_size, radius, line_thickness=1):
+    """
+    Return a centered BGRA crop whose visible area stays inside the crosshair circle.
+    """
+    if image is None or image.size == 0:
+        raise ValueError("image is empty")
+
+    left, top, diameter, scaled_radius = get_crosshair_roi_box(
+        image.shape,
+        preview_size=preview_size,
+        radius=radius,
+        line_thickness=line_thickness,
+    )
     crop = image[top:top + diameter, left:left + diameter].copy()
 
     if crop.ndim == 2:
