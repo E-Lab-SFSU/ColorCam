@@ -940,7 +940,12 @@ def write_crosshair_cropped_png(source_path, target_path, capture_state):
 
 
 def _main_crop_box_from_capture_state(capture_state, still_size):
-    """Return (left, top, width, height) in still/main coordinates, or None."""
+    """
+    Return (left, top, width, height) for still_size (width, height), or None.
+
+    still_size should be the requested capture resolution; camera_service remaps
+    this box onto the negotiated main stream size before RAW cropping.
+    """
     if not capture_state or not capture_state.get("enabled"):
         return None
     still_width, still_height = still_size
@@ -2095,6 +2100,7 @@ def main():
     
     # Setup 3D Printer
     csv_filename = "testing/file2.csv"
+    printer.open_printer()
     path_list = printer.get_path_list_csv(csv_filename)
     printer.initial_setup(path_list)
     
@@ -2842,7 +2848,7 @@ def main():
     window.close()
     
     # Closing 3D Printer Serial Connection
-    printer.printer.close()
+    printer.close_printer()
     
     # For loop to show camera feed
     pass

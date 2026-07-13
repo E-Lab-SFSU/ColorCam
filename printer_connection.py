@@ -26,21 +26,83 @@ import settings as C
 # Cell Sensor, at home, 90
 #camera.rotation = 90
 
-printer = serial.Serial(C.DEVICE_PATH, baudrate=C.BAUDRATE, timeout=C.TIMEOUT_TIME)
+# Lazily opened; import must not require a live serial device.
+printer = None
+
+
+def open_printer(device_path=None, baudrate=None, timeout=None):
+    """Open (or reopen) the global serial connection to the printer."""
+    global printer
+    if printer is not None:
+        try:
+            if printer.is_open:
+                return printer
+        except Exception:
+            pass
+        try:
+            printer.close()
+        except Exception:
+            pass
+        printer = None
+
+    device_path = C.DEVICE_PATH if device_path is None else device_path
+    baudrate = C.BAUDRATE if baudrate is None else baudrate
+    timeout = C.TIMEOUT_TIME if timeout is None else timeout
+    printer = serial.Serial(device_path, baudrate=baudrate, timeout=timeout)
+    print(f"Opened printer serial: {device_path} @ {baudrate}")
+    return printer
+
+
+def ensure_printer():
+    """Return an open printer serial, opening it on first use if needed."""
+    global printer
+    if printer is None:
+        return open_printer()
+    try:
+        if not printer.is_open:
+            return open_printer()
+    except Exception:
+        return open_printer()
+    return printer
+
+
+def close_printer():
+    """Close the global printer serial connection if open."""
+    global printer
+    if printer is None:
+        return
+    try:
+        if printer.is_open:
+            printer.close()
+            print("Closed printer serial connection")
+    except Exception as exc:
+        print(f"Error closing printer serial: {exc}")
+    finally:
+        printer = None
+
+
+def is_printer_open():
+    """Return True when the global printer serial handle is open."""
+    if printer is None:
+        return False
+    try:
+        return bool(printer.is_open)
+    except Exception:
+        return False
 
 
 # User Defined Functions
 
 # Define initial_setup() function for 3D printer
 def initial_setup(path_list):
-    global printer
     FIRST_LOCATION = 0
     X = 0
     Y = 1
     Z = 2
 
+    ensure_printer()
     # Check if 3D printer is connected
-    if printer.isOpen():
+    if is_printer_open():
         print('Connected to printer')
 
     # starting_location_x = path_list[0][X]
@@ -100,15 +162,14 @@ def run_gcode(gcode_string):
     #  G28
     #  G1X100Y100
 
-    # Call the global printer variable
-    global printer
+    ser = ensure_printer()
     # Add new line character at the end of the string
     print(gcode_string)
     gcode_string = gcode_string + "\n"
 
     # Convert to Binary with UTF-8 encoding for string, write to serial
     # printer.write(bytes(gcode_string, "utf-8"))
-    printer.write(str.encode(gcode_string))
+    ser.write(str.encode(gcode_string))
 
     # camera.start_preview(fullscreen=False, window=(30, 30, 500, 500))
     # time.sleep(5)
@@ -300,26 +361,26 @@ def menu(gcode_string_list):
 
 # Function: Listen on Serial Port, print results
 def output_serial_data():
-    global printer
+    ser = ensure_printer()
     
     # output = printer.readline()
-    printer.flush()
-    bytesToRead = printer.inWaiting()
+    ser.flush()
+    bytesToRead = ser.inWaiting()
     print("bytesToRead:", bytesToRead)
-    output = printer.read(bytesToRead)
+    output = ser.read(bytesToRead)
     # output = printer.read(512)
     # output = str(output)
     output = output.decode("utf-8")
     print("Serial Says:", output)
 
 def get_serial_data():
-    global printer
+    ser = ensure_printer()
     
     # output = printer.readline()
-    printer.flush()
-    bytesToRead = printer.inWaiting()
+    ser.flush()
+    bytesToRead = ser.inWaiting()
     print("bytesToRead:", bytesToRead)
-    output = printer.read(bytesToRead)
+    output = ser.read(bytesToRead)
     # output = printer.read(512)
     # output = str(output)
     output = output.decode("utf-8")
@@ -327,7 +388,7 @@ def get_serial_data():
     return output
 
 def get_serial_data2():
-    global printer
+    ser = ensure_printer()
     
     # init default output
     output = ""
@@ -341,7 +402,7 @@ def get_serial_data2():
     for i in range(num_tries):
     # while bytesToRead == 0:
         # printer.flush()
-        bytesToRead = printer.inWaiting()
+        bytesToRead = ser.inWaiting()
         # If no serial data found, start loop again.
         if bytesToRead == 0:
             # if no bytes found, then maybe too many requests.
@@ -351,7 +412,7 @@ def get_serial_data2():
         else:
             # bytesToRead > 0, capture it and break the loop
             print("bytesToRead:", bytesToRead)
-            output = printer.read(bytesToRead)
+            output = ser.read(bytesToRead)
             # output = printer.read(512)
             # output = str(output)
             output = output.decode("utf-8")

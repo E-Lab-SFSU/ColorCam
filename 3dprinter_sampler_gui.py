@@ -774,6 +774,7 @@ def main():
     
     # Setup 3D Printer
     csv_filename = "testing/file2.csv"
+    printer.open_printer()
     path_list = printer.get_path_list_csv(csv_filename)
     printer.initial_setup(path_list)
     
@@ -1115,7 +1116,7 @@ def main():
     window.close()
     
     # Closing 3D Printer Serial Connection
-    printer.printer.close()
+    printer.close_printer()
     
     # For loop to show camera feed
     pass
